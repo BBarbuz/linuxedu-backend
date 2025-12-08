@@ -1,0 +1,7 @@
+config/
+migrations/
+tests/
+venv/
+app/_pycache__
+.env
+SET
