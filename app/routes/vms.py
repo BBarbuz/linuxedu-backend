@@ -1,4 +1,175 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from typing import Optional
+from datetime import datetime, timedelta
+import uuid
+from app.database import get_db
+from app.models.user import User
+from app.models.vm import VM, VMStatus
+from app.utils.auth import get_current_user
+from app.schemas.requests import VMResponse
+
+router = APIRouter(prefix="/api/vm", tags=["vms"])
+
+@router.post("/create")
+async def create_vm(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Stwórz nową VM dla użytkownika"""
+    
+    # Sprawdź czy user już ma VM
+    result = await db.execute(
+        select(VM).where(
+            VM.user_id == current_user.id,
+            VM.status != VMStatus.DELETED
+        )
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="User already has a VM")
+    
+    # Generuj VM ID i nazwę
+    proxmox_vm_id = int(str(uuid.uuid4())[:8], 16) % 1000 + 100
+    vm_name = f"user-vm-{current_user.id}-{int(datetime.now().timestamp())}"
+    
+    # Stwórz VM w bazie
+    vm = VM(
+        user_id=current_user.id,
+        proxmox_vm_id=proxmox_vm_id,
+        vm_name=vm_name,
+        status=VMStatus.CREATED
+    )
+    
+    db.add(vm)
+    await db.commit()
+    await db.refresh(vm)
+    
+    print(f"✅ VM created: {vm_name} (ID={proxmox_vm_id})")
+    
+    return {
+        "id": vm.id,
+        "proxmox_vm_id": vm.proxmox_vm_id,
+        "vm_name": vm.vm_name,
+        "status": "creating"
+    }
+
+@router.get("")
+async def list_vms(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Pobierz listę VMs użytkownika"""
+    result = await db.execute(
+        select(VM).where(VM.user_id == current_user.id)
+    )
+    vms = result.scalars().all()
+    return [VMResponse.model_validate(vm) for vm in vms]
+
+@router.post("/{vm_id}/start")
+async def start_vm(
+    vm_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Uruchom VM"""
+    vm = await db.get(VM, vm_id)
+    
+    if not vm or vm.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="VM not found")
+    
+    vm.status = VMStatus.RUNNING
+    vm.runtime_expires_at = datetime.now() + timedelta(hours=12)
+    
+    await db.commit()
+    await db.refresh(vm)
+    
+    print(f"✅ VM started: {vm.vm_name}")
+    
+    return {
+        "status": "running",
+        "runtime_expires_at": vm.runtime_expires_at
+    }
+
+@router.post("/{vm_id}/stop")
+async def stop_vm(
+    vm_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Zatrzymaj VM"""
+    vm = await db.get(VM, vm_id)
+    
+    if not vm or vm.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="VM not found")
+    
+    vm.status = VMStatus.STOPPED
+    vm.runtime_expires_at = None
+    
+    await db.commit()
+    
+    print(f"✅ VM stopped: {vm.vm_name}")
+    
+    return {"status": "stopped"}
+
+@router.post("/{vm_id}/extend")
+async def extend_vm_time(
+    vm_id: int,
+    extension_minutes: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Przedłuż czas działania VM"""
+    
+    if extension_minutes < 5 or extension_minutes > 60:
+        raise HTTPException(
+            status_code=400,
+            detail="Extension must be between 5 and 60 minutes"
+        )
+    
+    vm = await db.get(VM, vm_id)
+    
+    if not vm or vm.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="VM not found")
+    
+    if vm.status != VMStatus.RUNNING:
+        raise HTTPException(status_code=400, detail="VM not running")
+    
+    max_runtime = datetime.now() + timedelta(hours=12)
+    new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
+    
+    if new_expiry > max_runtime:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot extend beyond 12 hours limit"
+        )
+    
+    vm.runtime_expires_at = new_expiry
+    
+    await db.commit()
+    await db.refresh(vm)
+    
+    print(f"✅ VM extended: {vm.vm_name}")
+    
+    return {
+        "status": "extended",
+        "new_expiry": vm.runtime_expires_at
+    }
+
+@router.delete("/{vm_id}")
+async def delete_vm(
+    vm_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Usuń VM"""
+    vm = await db.get(VM, vm_id)
+    
+    if not vm or vm.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="VM not found")
+    
+    vm.status = VMStatus.DELETED
+    from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from app.database import Base
 from app.models.user import User
@@ -114,3 +285,9 @@ async def get_vnc_url(
     if not url:
         raise HTTPException(status_code=400, detail="Failed to generate VNC URL")
     return VNCUrlResponse(vnc_url=url, expires_in_minutes=30)
+
+    await db.commit()
+    
+    print(f"✅ VM deleted: {vm.vm_name}")
+    
+    return {"message": "VM deleted"}
