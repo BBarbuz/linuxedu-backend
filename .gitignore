@@ -5,3 +5,4 @@ venv/
 app/_pycache__
 .env
 SET
+out*

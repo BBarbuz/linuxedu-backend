@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class LoginRequest(BaseModel):
@@ -36,6 +36,29 @@ class CreateUserResponse(BaseModel):
     email: str
     initial_password: str
     created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+class TestResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    difficulty: str
+    category: str
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+class TestTaskResponse(BaseModel):
+    id: int
+    test_id: int
+    task_number: int
+    title: str
+    description: str
+    checklist: Optional[List[str]] = None
+    command_hint: Optional[str] = None
     
     class Config:
         from_attributes = True

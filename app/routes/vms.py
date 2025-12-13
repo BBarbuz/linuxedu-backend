@@ -1,293 +1,470 @@
+"""
+Virtual Machine API Routes
+==========================
+Endpointy dla operacji na maszynach wirtualnych.
+"""
+
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import Optional
-from datetime import datetime, timedelta
-import uuid
+
 from app.database import get_db
 from app.models.user import User
-from app.models.vm import VM, VMStatus
 from app.utils.auth import get_current_user
-from app.schemas.requests import VMResponse
+from app.schemas.vm_schemas import (
+    CreateVMRequest, CreateVMResponse,
+    StartVMRequest, StartVMResponse,
+    StopVMRequest, StopVMResponse,
+    RebootVMRequest, RebootVMResponse,
+    ResetVMRequest, ResetVMResponse,
+    DeleteVMRequest, DeleteVMResponse,
+    ExtendTimeRequest, ExtendTimeResponse,
+    ListVMsResponse, VMResponse, VNCUrlResponse
+)
+from app.services.vm_services import VMService, ProxmoxService, AnsibleService
+from app.config import settings
 
-router = APIRouter(prefix="/api/vm", tags=["vms"])
+logger = logging.getLogger(__name__)
 
-@router.post("/create")
-async def create_vm(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Stwórz nową VM dla użytkownika"""
-    
-    # Sprawdź czy user już ma VM
-    result = await db.execute(
-        select(VM).where(
-            VM.user_id == current_user.id,
-            VM.status != VMStatus.DELETED
-        )
+
+router = APIRouter(prefix="/api/vms", tags=["vms"])
+
+# Initialize services
+proxmox_service = ProxmoxService(settings)
+ansible_service = AnsibleService(settings)
+vm_service = VMService(proxmox_service, ansible_service)
+
+
+
+def create_router():
+    """
+    Utwórz router dla VM operacji.
+    """
+    router = APIRouter(prefix="/api/vms", tags=["virtual_machines"])
+
+    # ========================================================================
+    # CREATE VM
+    # ========================================================================
+
+    @router.post(
+        "/create",
+        response_model=CreateVMResponse,
+        status_code=status.HTTP_201_CREATED,
+        summary="Utwórz nową maszynę wirtualną",
+        description="""
+        Tworzy nową VM dla zalogowanego użytkownika.
+        
+        **Pipeline:**
+        1. Walidacja: czy user już ma VM
+        2. Alokacja: VMID + IP z puli
+        3. Rezerwacja w BD
+        4. Clone template w Proxmoxie
+        5. Konfiguracja IP, SSH, cloud-init
+        6. Start VM
+        7. Ansible provisioning
+        
+        **Czas:** ~3-5 minut
+        """
     )
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="User already has a VM")
-    
-    # Generuj VM ID i nazwę
-    proxmox_vm_id = int(str(uuid.uuid4())[:8], 16) % 1000 + 100
-    vm_name = f"user-vm-{current_user.id}-{int(datetime.now().timestamp())}"
-    
-    # Stwórz VM w bazie
-    vm = VM(
-        user_id=current_user.id,
-        proxmox_vm_id=proxmox_vm_id,
-        vm_name=vm_name,
-        status=VMStatus.CREATED
+    async def create_vm(
+        _: CreateVMRequest = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Utwórz nową VM dla użytkownika."""
+        try:
+            vm = await vm_service.create_vm(current_user.id, db)
+            
+            return CreateVMResponse(
+                id=vm.id,
+                proxmox_vm_id=vm.proxmox_vm_id,
+                vm_name=vm.vm_name,
+                ip_address=vm.ip_address,
+                vm_status=vm.vm_status.value,
+                created_at=vm.created_at
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create VM: {str(e)}"
+            )
+
+    # ========================================================================
+    # LIST VMs
+    # ========================================================================
+
+    @router.get(
+        "",
+        response_model=ListVMsResponse,
+        summary="Pobierz listę VM użytkownika",
+        description="Zwraca wszystkie nieusunięte VM przypisane do zalogowanego użytkownika."
     )
-    
-    db.add(vm)
-    await db.commit()
-    await db.refresh(vm)
-    
-    print(f"✅ VM created: {vm_name} (ID={proxmox_vm_id})")
-    
-    return {
-        "id": vm.id,
-        "proxmox_vm_id": vm.proxmox_vm_id,
-        "vm_name": vm.vm_name,
-        "status": "creating"
-    }
+    async def list_vms(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Pobierz listę VM użytkownika."""
+        try:
+            vms = await vm_service.list_user_vms(current_user.id, db)
+            
+            vm_responses = [
+                VMResponse(
+                    id=vm.id,
+                    user_id=vm.user_id,
+                    proxmox_vm_id=vm.proxmox_vm_id,
+                    vm_name=vm.vm_name,
+                    vm_status=vm.vm_status.value,
+                    ip_address=vm.ip_address,
+                    created_at=vm.created_at,
+                    runtime_expires_at=vm.runtime_expires_at,
+                    last_active_at=vm.last_active_at
+                )
+                for vm in vms
+            ]
 
-@router.get("")
-async def list_vms(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Pobierz listę VMs użytkownika"""
-    result = await db.execute(
-        select(VM).where(VM.user_id == current_user.id)
+            return ListVMsResponse(vms=vm_responses, count=len(vm_responses))
+
+        except Exception as e:
+            logger.error(f"Error listing VMs: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to list VMs"
+            )
+
+    # ========================================================================
+    # GET VM DETAILS
+    # ========================================================================
+
+    @router.get(
+        "/{vm_id}",
+        response_model=VMResponse,
+        summary="Pobierz szczegóły VM",
+        description="Zwraca pełne dane konkretnej VM."
     )
-    vms = result.scalars().all()
-    return [VMResponse.model_validate(vm) for vm in vms]
+    async def get_vm(
+        vm_id: int,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Pobierz szczegóły VM."""
+        try:
+            vm = await vm_service.get_user_vm(vm_id, current_user.id, db)
 
-@router.post("/{vm_id}/start")
-async def start_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Uruchom VM"""
-    vm = await db.get(VM, vm_id)
-    
-    if not vm or vm.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="VM not found")
-    
-    vm.status = VMStatus.RUNNING
-    vm.runtime_expires_at = datetime.now() + timedelta(hours=12)
-    
-    await db.commit()
-    await db.refresh(vm)
-    
-    print(f"✅ VM started: {vm.vm_name}")
-    
-    return {
-        "status": "running",
-        "runtime_expires_at": vm.runtime_expires_at
-    }
+            return VMResponse(
+                id=vm.id,
+                user_id=vm.user_id,
+                proxmox_vm_id=vm.proxmox_vm_id,
+                vm_name=vm.vm_name,
+                vm_status=vm.vm_status.value,
+                ip_address=vm.ip_address,
+                created_at=vm.created_at,
+                runtime_expires_at=vm.runtime_expires_at,
+                last_active_at=vm.last_active_at
+            )
 
-@router.post("/{vm_id}/stop")
-async def stop_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Zatrzymaj VM"""
-    vm = await db.get(VM, vm_id)
-    
-    if not vm or vm.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="VM not found")
-    
-    vm.status = VMStatus.STOPPED
-    vm.runtime_expires_at = None
-    
-    await db.commit()
-    
-    print(f"✅ VM stopped: {vm.vm_name}")
-    
-    return {"status": "stopped"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to get VM"
+            )
 
-@router.post("/{vm_id}/extend")
-async def extend_vm_time(
-    vm_id: int,
-    extension_minutes: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Przedłuż czas działania VM"""
-    
-    if extension_minutes < 5 or extension_minutes > 60:
-        raise HTTPException(
-            status_code=400,
-            detail="Extension must be between 5 and 60 minutes"
-        )
-    
-    vm = await db.get(VM, vm_id)
-    
-    if not vm or vm.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="VM not found")
-    
-    if vm.status != VMStatus.RUNNING:
-        raise HTTPException(status_code=400, detail="VM not running")
-    
-    max_runtime = datetime.now() + timedelta(hours=12)
-    new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
-    
-    if new_expiry > max_runtime:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot extend beyond 12 hours limit"
-        )
-    
-    vm.runtime_expires_at = new_expiry
-    
-    await db.commit()
-    await db.refresh(vm)
-    
-    print(f"✅ VM extended: {vm.vm_name}")
-    
-    return {
-        "status": "extended",
-        "new_expiry": vm.runtime_expires_at
-    }
+    # ========================================================================
+    # START VM
+    # ========================================================================
 
-@router.delete("/{vm_id}")
-async def delete_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Usuń VM"""
-    vm = await db.get(VM, vm_id)
-    
-    if not vm or vm.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="VM not found")
-    
-    vm.status = VMStatus.DELETED
-    from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
-from sqlalchemy.sql import func
-from app.database import Base
-from app.models.user import User
+    @router.post(
+        "/{vm_id}/start",
+        response_model=StartVMResponse,
+        summary="Uruchom VM",
+        description="""
+        Uruchomienie VM i ustawienie timera 12 godzin.
+        
+        Po uruchomieniu:
+        - Status zmienia się na RUNNING
+        - runtime_expires_at = teraz + 12h
+        - VM zatrzyma się automatycznie po 12h
+        """
+    )
+    async def start_vm(
+        vm_id: int,
+        _: StartVMRequest = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Uruchom VM."""
+        try:
+            vm = await vm_service.start_vm(vm_id, current_user.id, db)
 
-"""
-Virtual Machine management routes
-"""
+            return StartVMResponse(
+                vm_id=vm.id,
+                vm_status=vm.vm_status.value,
+                runtime_expires_at=vm.runtime_expires_at,
+                message="VM started successfully"
+            )
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app.models.user import User
-from app.models.vm import VM
-from app.models.schemas import VMResponse, ExtendTimeRequest, VNCUrlResponse
-from app.services.vm_service import VMService
-from app.utils.auth import get_current_user
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error starting VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to start VM"
+            )
 
-router = APIRouter()
-vm_service = VMService()
+    # ========================================================================
+    # STOP VM
+    # ========================================================================
 
-@router.post("/create", response_model=VMResponse)
-async def create_vm(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Create new VM from template and auto-start"""
-    vm = await vm_service.create_and_start_vm(db, current_user.id)
-    if not vm:
-        raise HTTPException(status_code=400, detail="Failed to create VM")
-    return VMResponse.model_validate(vm)
+    @router.post(
+        "/{vm_id}/stop",
+        response_model=StopVMResponse,
+        summary="Zatrzymaj VM",
+        description="Graceful shutdown VM."
+    )
+    async def stop_vm(
+        vm_id: int,
+        _: StopVMRequest = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Zatrzymaj VM."""
+        try:
+            vm = await vm_service.stop_vm(vm_id, current_user.id, db)
 
-@router.post("/{vm_id}/start")
-async def start_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Start VM"""
-    success = await vm_service.start_vm(db, current_user.id, vm_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to start VM")
-    return {"message": "VM started successfully"}
+            return StopVMResponse(
+                vm_id=vm.id,
+                vm_status=vm.vm_status.value,
+                message="VM stopped successfully"
+            )
 
-@router.post("/{vm_id}/stop")
-async def stop_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Stop VM"""
-    success = await vm_service.stop_vm(db, current_user.id, vm_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to stop VM")
-    return {"message": "VM stopped successfully"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error stopping VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to stop VM"
+            )
 
-@router.post("/{vm_id}/reboot")
-async def reboot_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Reboot VM"""
-    success = await vm_service.reboot_vm(db, current_user.id, vm_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to reboot VM")
-    return {"message": "VM rebooted successfully"}
+    # ========================================================================
+    # REBOOT VM
+    # ========================================================================
 
-@router.post("/{vm_id}/reset")
-async def reset_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Reset VM to fresh template image"""
-    vm = await vm_service.reset_vm(db, current_user.id, vm_id)
-    if not vm:
-        raise HTTPException(status_code=400, detail="Failed to reset VM")
-    return VMResponse.model_validate(vm)
+    @router.post(
+        "/{vm_id}/reboot",
+        response_model=RebootVMResponse,
+        summary="Restartuj VM",
+        description="""
+        Graceful reboot VM (nie resetuje timera 12h).
+        Czas: ~30-60 sekund
+        """
+    )
+    async def reboot_vm(
+        vm_id: int,
+        _: RebootVMRequest = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Restartuj VM."""
+        try:
+            vm = await vm_service.reboot_vm(vm_id, current_user.id, db)
 
-@router.post("/{vm_id}/extend")
-async def extend_time(
-    vm_id: int,
-    request: ExtendTimeRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Extend VM runtime"""
-    success = await vm_service.extend_runtime(db, current_user.id, vm_id, request.extension_minutes)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to extend time")
-    return {"message": "Time extended successfully"}
+            return RebootVMResponse(
+                vm_id=vm.id,
+                vm_status=vm.vm_status.value,
+                runtime_expires_at=vm.runtime_expires_at,
+                message="VM rebooting..."
+            )
 
-@router.delete("/{vm_id}")
-async def delete_vm(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Delete VM"""
-    success = await vm_service.delete_vm(db, current_user.id, vm_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to delete VM")
-    return {"message": "VM deleted successfully"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error rebooting VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to reboot VM"
+            )
 
-@router.get("/{vm_id}/vnc-url", response_model=VNCUrlResponse)
-async def get_vnc_url(
-    vm_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get noVNC console URL"""
-    url = await vm_service.get_vnc_url(db, current_user.id, vm_id)
-    if not url:
-        raise HTTPException(status_code=400, detail="Failed to generate VNC URL")
-    return VNCUrlResponse(vnc_url=url, expires_in_minutes=30)
+    # ========================================================================
+    # RESET VM
+    # ========================================================================
 
-    await db.commit()
-    
-    print(f"✅ VM deleted: {vm.vm_name}")
-    
-    return {"message": "VM deleted"}
+    @router.post(
+        "/{vm_id}/reset",
+        response_model=ResetVMResponse,
+        summary="Resetuj VM",
+        description="""
+        Reset VM do stanu czystego.
+        
+        Co się dzieje:
+        - Nowy VMID w Proxmoxie
+        - Stary adres IP (zwolniony przy resecie)
+        - Wszystkie zmiany użytkownika są usuwane
+        - Timer 12h resetuje się
+        
+        Czas: ~3-5 minut
+        """
+    )
+    async def reset_vm(
+        vm_id: int,
+        _: ResetVMRequest = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Resetuj VM."""
+        try:
+            vm = await vm_service.reset_vm(vm_id, current_user.id, db)
+
+            return ResetVMResponse(
+                vm_id=vm.id,
+                old_proxmox_vm_id=vm.proxmox_vm_id - 1,  # Approximate
+                new_proxmox_vm_id=vm.proxmox_vm_id,
+                ip_address=vm.ip_address,
+                vm_status=vm.vm_status.value,
+                message="VM reset successfully"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error resetting VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to reset VM"
+            )
+
+    # ========================================================================
+    # EXTEND TIME
+    # ========================================================================
+
+    @router.post(
+        "/{vm_id}/extend",
+        response_model=ExtendTimeResponse,
+        summary="Przedłuż czas działania VM",
+        description="""
+        Przedłużenie czasu działania VM.
+        
+        Warunki:
+        - extension_minutes: 5-60 minut
+        - Max limit: 12 godzin od teraz
+        - Max 3 extensiony na sesję 12h
+        """
+    )
+    async def extend_time(
+        vm_id: int,
+        request: ExtendTimeRequest,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Przedłuż czas działania VM."""
+        try:
+            vm = await vm_service.extend_time(
+                vm_id,
+                current_user.id,
+                request.extension_minutes,
+                db
+            )
+
+            return ExtendTimeResponse(
+                vm_id=vm.id,
+                extension_minutes=request.extension_minutes,
+                new_runtime_expires_at=vm.runtime_expires_at,
+                message="Runtime extended successfully"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error extending VM time: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to extend VM time"
+            )
+
+    # ========================================================================
+    # DELETE VM
+    # ========================================================================
+
+    @router.delete(
+        "/{vm_id}",
+        response_model=DeleteVMResponse,
+        summary="Usuń VM",
+        description="""
+        Usunięcie VM i zwolnienie wszystkich zasobów.
+        
+        Operacja:
+        - Graceful shutdown w Proxmoxie
+        - Usunięcie dysku i konfiguracji z Proxmoxa
+        - Zwolnienie adresu IP
+        - Oznaczenie w BD jako DELETED
+        """
+    )
+    async def delete_vm(
+        vm_id: int,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Usuń VM."""
+        try:
+            vm = await vm_service.delete_vm(vm_id, current_user.id, db)
+
+            return DeleteVMResponse(
+                vm_id=vm.id,
+                vm_status=vm.vm_status.value,
+                message="VM deleted successfully"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting VM: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete VM"
+            )
+
+    # ========================================================================
+    # VNC URL
+    # ========================================================================
+
+    @router.get(
+        "/{vm_id}/vnc-url",
+        response_model=VNCUrlResponse,
+        summary="Pobierz URL do noVNC konsoli",
+        description="""
+        Generuje tymczasowy token dla dostępu do noVNC konsoli VM.
+        
+        Token ważny przez 30 minut.
+        """
+    )
+    async def get_vnc_url(
+        vm_id: int,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+        """Pobierz URL do noVNC konsoli."""
+        try:
+            vnc_url = await vm_service.get_vnc_url(vm_id, current_user.id, db)
+
+            return VNCUrlResponse(
+                vnc_url=vnc_url,
+                expires_in_seconds=1800,
+                vm_id=vm_id
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting VNC URL: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate VNC URL"
+            )
+
+    return router
