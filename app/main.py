@@ -10,7 +10,8 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes import create_router
 from app.routes.vms import create_router as create_vm_router
-from app.services.load_balancing_service import init_load_balancing_service, get_load_balancing_service
+from app.services.load_balancing_service import init_load_balancing_service
+from app.services.proxmox_client import get_proxmox_client
 from app.services.ceph_service import init_ceph_service
 from app.services.ha_service import init_ha_service
 from app.services.vm_monitoring_service import init_vm_monitoring_service, get_vm_monitoring_service

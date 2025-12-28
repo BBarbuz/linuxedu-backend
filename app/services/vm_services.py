@@ -19,6 +19,8 @@ from fastapi import HTTPException, status
 from app.models.vm import VM, VMStatus, VMMetadata, AllocatedIP, IPStatus, VMIDSequence, SSHKey
 from app.models.user import User
 from app.config import settings
+from app.services.proxmox_client import get_proxmox_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,9 @@ class ProxmoxService:
         self.verify_ssl = settings.PROXMOX_VERIFY_SSL
         self.storage = settings.VM_STORAGE
         self.ceph_pool = settings.CEPH_POOL
+        self.token_id = settings.PROXMOX_TOKEN_ID
+        self.template_vmid = settings.PROXMOX_TEMPLATE_VMID
+        self.client = get_proxmox_client().primary_client
 
     async def _proxmox_request(self, method: str, path: str, data: dict = None, retry_count: int = 3) -> dict:
         """
@@ -65,8 +70,8 @@ class ProxmoxService:
 
         url = f"{self.base_url}{path}"
         headers = {
-            "Authorization": f"PVEAPIToken={self.user}!{self.token}",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Authorization": f"PVEAPIToken={self.user}!{self.token_id}={self.token}",
+            "Content-Type": "application/x-www-form-urlencoded",
         }
 
         for attempt in range(retry_count):
@@ -83,7 +88,8 @@ class ProxmoxService:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
                 if response.status_code in [200, 201]:
-                    return response.json().get("data", {})
+                    data = response.json().get("data", {})
+                    return data  # tu może być UPID przy długich taskach
                 elif response.status_code >= 500 and attempt < retry_count - 1:
                     # Server error - retry
                     wait_time = 2 ** attempt
@@ -108,65 +114,11 @@ class ProxmoxService:
                         detail="Proxmox service unavailable"
                     )
 
-    async def create_empty_vm(self, vmid: int, vm_name: str) -> bool:
-        """Utwórz pustą VM (bez dysku)."""
-        path = f"/nodes/{self.node}/qemu"
-        data = {
-            "vmid": vmid,
-            "name": vm_name,
-            "memory": 2048,
-            "cores": 2,
-            "sockets": 1,
-            "net0": "virtio,bridge=vmbr0,mtu=1500"
-        }
-        result = await self._proxmox_request("POST", path, data)
-        logger.info(f"✅ Empty VM created: {vmid}")
-        return True
-
-    async def import_disk_ceph(self, vmid: int, qcow2_path: str, ceph_pool: str) -> bool:
-        """
-        Importuj qcow2 do Ceph RBD.
-        - qemu-img convert qcow2→raw na Ceph RBD
-        - Wymaga SSH na Proxmox node
-        """
-        rbd_name = f"vm-{vmid}-disk-0"
-        
-        ssh_cmd = f"""
-        set -e
-        echo "Converting qcow2 to Ceph RBD: {rbd_name}"
-        qemu-img convert -f qcow2 -O raw {qcow2_path} rbd:{ceph_pool}/{rbd_name}
-        echo "✅ qcow2→RBD conversion complete"
-        """
-
-        try:
-            # Wykonaj SSH do Proxmox node'a
-            result = await self._ssh_execute(ssh_cmd)
-            if not result:
-                logger.error(f"❌ Import failed for VM {vmid}")
-                return False
-
-            # Przypisz RBD do VM via Proxmox API
-            path = f"/nodes/{self.node}/qemu/{vmid}/config"
-            data = {
-                "scsi0": f"{ceph_pool}:{rbd_name}",
-                "scsihw": "virtio-scsi-pci",
-                "boot": "c",
-                "bootdisk": "scsi0"
-            }
-            await self._proxmox_request("PUT", path, data)
-
-            logger.info(f"✅ Disk imported for VM {vmid} on Ceph RBD")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Import disk failed: {e}")
-            return False
-
     async def _ssh_execute(self, command: str, timeout_seconds: int = 180) -> bool:
         """Wykonaj komendę SSH na Proxmox node."""
         try:
             process = await asyncio.create_subprocess_shell(
-                f"ssh -i /root/.ssh/id_rsa root@{self.host} '{command}'",
+                f"ssh -i /root/.ssh/id_ed25519 root@{self.host} '{command}'",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -194,39 +146,112 @@ class ProxmoxService:
         path = f"/nodes/{self.node}/qemu/{vmid}/config"
 
         data = {
-            "ipconfig0": f"ip={ip_address}/24,gw=192.168.100.1",
+            "ipconfig0": f"ip={ip_address}/24,gw=192.168.100.0",
             "ciuser": "root",
             "nameserver": "8.8.8.8 8.8.4.4",
-            "ide2": f"{settings.VM_CLOUDINIT_STORAGE}:cloudinit",
-            "serial0": "socket",
-            "vga": "serial0",
             "agent": "enabled=1"
         }
+        #"ide2": f"{settings.VM_CLOUDINIT_STORAGE}:cloudinit",
 
         await self._proxmox_request("PUT", path, data)
         logger.info(f"✅ VM {vmid} configured with IP {ip_address}")
         return True
 
-    async def start_vm(self, vmid: int) -> bool:
-        """Start VM."""
+    async def start_vm(self, vmid: int, max_wait: int = 60) -> bool:
+        """
+        Start VM w Proxmoxie i poczekaj aż naprawdę będzie 'running'.
+        max_wait – maksymalny czas w sekundach na dojście do running.
+        """
         path = f"/nodes/{self.node}/qemu/{vmid}/status/start"
-        await self._proxmox_request("POST", path, {})
-        logger.info(f"✅ VM started: {vmid}")
-        return True
 
-    async def shutdown_vm(self, vmid: int) -> bool:
-        """Graceful shutdown VM."""
+        # 1. Wyślij start – wynik zawiera UPID taska (lub pusty dict)
+        result = await self._proxmox_request("POST", path, {})
+
+        # UPID może być w data lub data["upid"] (zależnie od wersji)
+        upid = None
+        if isinstance(result, str):
+            upid = result
+        elif isinstance(result, dict):
+            upid = result.get("upid") or result.get("data")
+
+        if upid:
+            logger.info(f"Start task UPID for VM {vmid}: {upid}")
+
+        # 2. Polluj status VM aż będzie 'running' lub timeout
+        for _ in range(max_wait):
+            status = await self.get_vm_status(vmid)
+            if status == "running":
+                logger.info(f"✅ VM {vmid} is running")
+                return True
+            await asyncio.sleep(1)
+
+        logger.error(f"❌ VM {vmid} did not reach 'running' state within {max_wait}s")
+        return False
+
+    async def shutdown_vm(self, vmid: int, max_wait: int = 60) -> bool:
+        """
+        Graceful shutdown VM i poczekaj aż status będzie 'stopped'.
+        max_wait – maksymalny czas w sekundach na wyłączenie VM.
+        """
         path = f"/nodes/{self.node}/qemu/{vmid}/status/shutdown"
-        await self._proxmox_request("POST", path, {})
-        logger.info(f"✅ VM shutdown: {vmid}")
-        return True
 
-    async def reboot_vm(self, vmid: int) -> bool:
-        """Reboot VM (graceful)."""
+        # 1. Wyślij żądanie shutdown – może zwrócić UPID
+        result = await self._proxmox_request("POST", path, {})
+
+        upid = None
+        if isinstance(result, str):
+            upid = result
+        elif isinstance(result, dict):
+            upid = result.get("upid") or result.get("data")
+
+        if upid:
+            logger.info(f"Shutdown task UPID for VM {vmid}: {upid}")
+
+        # 2. Polluj status VM aż będzie 'stopped' albo timeout
+        for _ in range(max_wait):
+            status = await self.get_vm_status(vmid)
+            if status == "stopped":
+                logger.info(f"✅ VM {vmid} is stopped")
+                return True
+            await asyncio.sleep(1)
+
+        logger.error(f"❌ VM {vmid} did not reach 'stopped' state within {max_wait}s")
+        return False
+
+    async def reboot_vm(self, vmid: int, max_wait: int = 120) -> bool:
+        """
+        Graceful reboot VM i poczekaj aż wróci do 'running'.
+        max_wait – maksymalny czas w sekundach na restart VM.
+        """
         path = f"/nodes/{self.node}/qemu/{vmid}/status/reboot"
-        await self._proxmox_request("POST", path, {})
-        logger.info(f"✅ VM rebooted: {vmid}")
-        return True
+
+        # 1. Wyślij żądanie reboot – może zwrócić UPID
+        result = await self._proxmox_request("POST", path, {})
+
+        upid = None
+        if isinstance(result, str):
+            upid = result
+        elif isinstance(result, dict):
+            upid = result.get("upid") or result.get("data")
+
+        if upid:
+            logger.info(f"Reboot task UPID for VM {vmid}: {upid}")
+
+        # 2. Polluj status VM: najpierw stopped, potem running
+        for _ in range(max_wait):
+            status = await self.get_vm_status(vmid)
+            
+            if status == "running":
+                logger.info(f"✅ VM {vmid} rebooted and running")
+                return True
+            elif status == "stopped":
+                logger.debug(f"VM {vmid} shutting down during reboot...")
+            
+            await asyncio.sleep(2)  # dłuższy interwał dla reboot
+
+        logger.error(f"❌ VM {vmid} did not reboot successfully within {max_wait}s")
+        return False
+
 
     async def destroy_vm(self, vmid: int, purge: bool = True) -> bool:
         """Destroy VM (remove config + disks)."""
@@ -287,19 +312,95 @@ class ProxmoxService:
 
     async def get_vnc_url(self, vmid: int, expiry_seconds: int = 1800) -> str:
         """
-        Get temporary VNC URL token.
-
-        Returns:
-            URL do noVNC konsoli
+        Get VNC URL w formacie Proxmox noVNC (działający!).
         """
-        path = f"/nodes/{self.node}/qemu/{vmid}/vncproxy"
-        result = await self._proxmox_request("POST", path, {})
-        ticket = result.get("ticket", "")
-        port = result.get("port", "6080")
+        try:
+            # Format IDENTYCZNY jak działający link z Proxmox
+            vncurl = (
+                f"https://{settings.PROXMOX_HOST}:8006/?"
+                f"console=kvm&"
+                f"novnc=1&"
+                f"node={self.node}&"
+                f"vmid={vmid}&"
+                f"vmname=user-vm-{vmid}&"  # opcjonalnie
+                f"resize=off"
+            )
+            
+            logger.info(f"VNC URL generated for VM {vmid}: {vncurl}")
+            return vncurl
+            
+        except Exception as e:
+            logger.error(f"Failed to get VNC URL for VM {vmid}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate VNC URL: {str(e)}",
+            )
 
-        vnc_url = f"https://{settings.PROXMOX_HOST}:{port}/?path=?vncticket={ticket}&port=6080"
-        logger.info(f"✅ VNC URL generated for VM {vmid}")
-        return vnc_url
+    async def clone_vm(
+        self,
+        template_vmid: int,
+        new_vmid: int,
+        name: str,
+        target_node: str,
+        pool: Optional[str],
+        full: bool,
+        storage: str,
+        max_wait: int = 3600,   # max 60 min
+    ) -> bool:
+        """
+        Klonuj VM z template_vmid do new_vmid i poczekaj na zakończenie taska.
+        Zwraca True, jeśli Proxmox zakończył klon z exitstatus=OK.
+        """
+        params = {
+            "newid": new_vmid,
+            "name": name,
+            "target": target_node,
+            "full": int(full),
+            "storage": storage,
+        }
+        if pool:
+            params["pool"] = pool
+
+        path = f"/nodes/{target_node}/qemu/{template_vmid}/clone"
+
+        # 1. POST /clone – wynik powinien zawierać UPID taska
+        result = await self._proxmox_request("POST", path, data=params)
+
+        # UPID może być stringiem albo w polu "upid"/"data"
+        upid = None
+        if isinstance(result, str):
+            upid = result
+        elif isinstance(result, dict):
+            upid = result.get("upid") or result.get("data")
+
+        if not upid:
+            logger.error("❌ No UPID returned for clone task")
+            return False
+
+        logger.info(f"Clone task UPID for VM {new_vmid}: {upid}")
+
+        # 2. Poll status: GET /nodes/{node}/tasks/{upid}/status
+        for _ in range(max_wait):
+            status = await self._proxmox_request(
+                "GET",
+                f"/nodes/{target_node}/tasks/{upid}/status",
+            )
+
+            task_status = status.get("status")
+            exit_status = status.get("exitstatus")
+
+            if task_status == "stopped":
+                if exit_status == "OK":
+                    logger.info(f"✅ Clone task finished OK: {upid}")
+                    return True
+                else:
+                    logger.error(f"❌ Clone failed: {exit_status}")
+                    return False
+
+            await asyncio.sleep(1)
+
+        logger.error(f"❌ Clone task timeout after {max_wait}s: {upid}")
+        return False
 
 
 # ============================================================================
@@ -419,6 +520,7 @@ class VMService:
     def __init__(self, proxmox_service: ProxmoxService, ansible_service: AnsibleService):
         self.proxmox = proxmox_service
         self.ansible = ansible_service
+        self.client = proxmox_service.client
 
     # ========================================================================
     # CREATE VM - MAIN PIPELINE
@@ -426,23 +528,23 @@ class VMService:
 
     async def create_vm(self, db: AsyncSession, user_id: int) -> Optional[VM]:
         """
-        Nowy pipeline z Ceph RBD:
-        1. Walidacja
+        Pipeline:
+        1. Walidacja (brak aktywnej VM)
         2. Alokacja VMID + IP
-        3. Rezerwacja (INSERT DB)
-        4. create_empty_vm()
-        5. import_disk_ceph() ← qemu-img convert qcow2→RBD
-        6. configure_vm()
-        7. start_vm()
-        8. poll_vm_ready()
-        9. Ansible provisioning
-        10. Finalizacja
+        3. Rezerwacja w DB (CREATING)
+        4. Klon z template (z potwierdzeniem)
+        5. Ustawienie CREATED (VM istnieje w Proxmox)
+        6. Konfiguracja cloud-init
+        7. Start VM (z potwierdzeniem)
+        8. Ansible provisioning
+        9. Finalizacja (READY)
         """
         try:
-            # 1. Walidacja
+            # 1. Walidacja – pomijamy DELETED i NULL
             result = await db.execute(
                 select(VM).where(
                     (VM.user_id == user_id) &
+                    (VM.vm_status.isnot(None)) &
                     (VM.vm_status != VMStatus.DELETED)
                 )
             )
@@ -450,11 +552,11 @@ class VMService:
                 logger.warning(f"User {user_id} already has active VM")
                 return None
 
-            # 2. Alokacja VMID + IP (SELECT FOR UPDATE)
+            # 2. Alokacja VMID + IP
             vmid_result = await db.execute(
                 select(VMIDSequence).with_for_update()
             )
-            vmid_seq = vmid_result.scalar_one()
+            vmid_seq = vmid_result.scalar_one_or_none()
             new_vmid = vmid_seq.next_id
             vmid_seq.next_id += 1
 
@@ -464,68 +566,66 @@ class VMService:
                 .with_for_update()
                 .limit(1)
             )
-            allocated_ip = ip_result.scalar_one()
+            allocated_ip = ip_result.scalar_one_or_none()
+            if not allocated_ip:
+                logger.error("No free IPs")
+                return None
             allocated_ip.status = IPStatus.ALLOCATED
 
-            # 3. Rezerwacja
+            # 3. Rezerwacja w DB – VM jest w stanie CREATING (kopiowanie w toku)
             vm = VM(
                 user_id=user_id,
                 proxmox_vm_id=new_vmid,
                 vm_name=f"user-vm-{user_id}-{int(time.time())}",
-                vm_status=VMStatus.CREATED,
+                vm_status=VMStatus.CREATING,
                 ip_address=str(allocated_ip.ip_address),
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
+                node=settings.PROXMOX_PRIMARY_NODE,
             )
             db.add(vm)
             await db.commit()
+            await db.refresh(vm)
 
-            # 4. Create empty VM
-            if not await self.proxmox.create_empty_vm(new_vmid, vm.vm_name):
+            # 4. Klon z szablonu + POTWIERDZENIE (UPID + polling)
+            ok = await self.proxmox.clone_vm(
+                template_vmid=settings.PROXMOX_TEMPLATE_VMID,
+                new_vmid=new_vmid,
+                name=vm.vm_name,
+                target_node=vm.node,
+                pool=None,
+                full=True,
+                storage=settings.CEPH_POOL,
+            )
+            if not ok:
                 vm.vm_status = VMStatus.FAILED
                 await db.commit()
                 return None
 
-            # 5. Import qcow2→Ceph RBD
-            if not await self.proxmox.import_disk_ceph(
-                new_vmid,
-                settings.VM_QCOW2_PATH,
-                settings.CEPH_POOL
-            ):
-                vm.vm_status = VMStatus.FAILED
-                await db.commit()
-                return None
+            # 5. Po udanym klonie: VM jest utworzona w Proxmox → status CREATED
+            vm.vm_status = VMStatus.CREATED
+            await db.commit()
+            await db.refresh(vm)
 
-            # 6. Configure VM
-            if not await self.proxmox.configure_vm(
+            # 6. Configure VM (cloud-init: IP, hostname, ssh key)
+            ok = await self.proxmox.configure_vm(
                 new_vmid,
                 str(allocated_ip.ip_address),
-                "",  # SSH key from cloud-init
+                "",  # SSH key
                 vm.vm_name
-            ):
+            )
+            if not ok:
                 vm.vm_status = VMStatus.FAILED
                 await db.commit()
                 return None
 
-            # 7. Start VM
-            if not await self.proxmox.start_vm(new_vmid):
+            # 7. Start VM (start_vm z potwierdzeniem running)
+            ok = await self.proxmox.start_vm(new_vmid)
+            if not ok:
                 vm.vm_status = VMStatus.FAILED
                 await db.commit()
                 return None
 
-            # 8. Poll ready
-            await self.proxmox.poll_vm_ready(new_vmid)
-
-            # 9. Ansible provisioning
-            vm.vm_status = VMStatus.PROVISIONING
-            await db.commit()
-
-            hostname = f"user-vm-{user_id}"
-            if not await self.ansible.run_setup_vm(str(allocated_ip.ip_address), hostname):
-                vm.vm_status = VMStatus.FAILED
-                await db.commit()
-                return None
-
-            # 10. Finalizacja
+            # 8. Finalizacja
             vm.vm_status = VMStatus.READY
             vm.runtime_expires_at = datetime.utcnow() + timedelta(
                 seconds=settings.VM_DEFAULT_TIMEOUT_SECONDS
@@ -534,19 +634,23 @@ class VMService:
             await db.commit()
             await db.refresh(vm)
 
-            logger.info(f"✅ VM {new_vmid} created for user {user_id}")
+            logger.info(
+                f"✅ VM {new_vmid} created (clone from {settings.PROXMOX_TEMPLATE_VMID}) "
+                f"for user {user_id}"
+            )
             return vm
 
         except Exception as e:
             logger.error(f"❌ Error creating VM: {e}")
             return None
 
+
     # ========================================================================
     # OPERACJE NA VM
     # ========================================================================
 
     async def start_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Start VM + ustaw timer 12h."""
+        """Start VM + ustaw timer 12h, z potwierdzeniem że VM faktycznie ruszyła."""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
         if vm.vm_status == VMStatus.RUNNING:
@@ -555,8 +659,15 @@ class VMService:
                 detail="VM is already running"
             )
 
-        await self.proxmox.start_vm(vm.proxmox_vm_id)
+        # 1. Start w Proxmoxie + oczekiwanie na 'running'
+        ok = await self.proxmox.start_vm(vm.proxmox_vm_id)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to start VM in Proxmox"
+            )
 
+        # 2. Aktualizacja BD – dopiero PO potwierdzeniu running
         vm.vm_status = VMStatus.RUNNING
         vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=12)
         vm.last_active_at = datetime.utcnow()
@@ -568,10 +679,15 @@ class VMService:
         return vm
 
     async def stop_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Stop VM."""
+        """Stop VM z potwierdzeniem z Proxmoxa."""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
-        await self.proxmox.shutdown_vm(vm.proxmox_vm_id)
+        ok = await self.proxmox.shutdown_vm(vm.proxmox_vm_id)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to shutdown VM in Proxmox",
+            )
 
         vm.vm_status = VMStatus.STOPPED
         vm.runtime_expires_at = None
@@ -584,7 +700,7 @@ class VMService:
         return vm
 
     async def reboot_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Reboot VM (nie resetuje timer)."""
+        """Reboot VM (nie resetuje timer), z potwierdzeniem."""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
         if vm.vm_status != VMStatus.RUNNING:
@@ -593,13 +709,23 @@ class VMService:
                 detail="VM is not running"
             )
 
-        await self.proxmox.reboot_vm(vm.proxmox_vm_id)
+        # 1. Reboot w Proxmoxie + oczekiwanie na 'running'
+        ok = await self.proxmox.reboot_vm(vm.proxmox_vm_id)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to reboot VM in Proxmox"
+            )
+
+        # 2. Aktualizacja DB – dopiero PO potwierdzeniu running
         vm.last_active_at = datetime.utcnow()
 
         await db.commit()
+        await db.refresh(vm)
 
         logger.info(f"✅ VM rebooted: {vm.proxmox_vm_id}")
         return vm
+
 
     async def reset_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
         """
@@ -616,7 +742,7 @@ class VMService:
         result = await db.execute(
             select(VMIDSequence).with_for_update()
         )
-        seq = result.scalar_one()
+        seq = result.scalar_one_or_none()
         new_vm_id = seq.next_id
         seq.next_id += 1
 
@@ -752,7 +878,7 @@ class VMService:
         """Pobierz VM użytkownika."""
         return await self._get_user_vm(vm_id, user_id, db)
 
-    async def list_user_vms(self, user_id: int, db: AsyncSession) -> List[VM]:
+    async def list_user_vms(self, db: AsyncSession, user_id: int) -> List[VM]:
         """List wszystkie VM użytkownika."""
         result = await db.execute(
             select(VM)
@@ -760,6 +886,7 @@ class VMService:
             .order_by(VM.created_at.desc())
         )
         return result.scalars().all()
+
 
     async def get_vnc_url(self, vm_id: int, user_id: int, db: AsyncSession) -> str:
         """Pobierz VNC URL dla VM."""
@@ -827,389 +954,23 @@ class VMService:
 
         return vm
 
-        """
-VM Service - Kluczowe fragmenty z integracją Ceph + HA + Monitoring
-
-To jest fragment pokazujący kluczowe zmiany. Full file znajduje się w instrukcji.
-"""
-
-# ============================================================================
-# FRAGMENT 1: Alokacja zasobów z Ceph health check
-# ============================================================================
-
-async def allocate_resources(db: AsyncSession, proxmox) -> tuple[int, str, str]:
-    """Alokuj VMID, IP i node. Wybierz nod z load balancing."""
-    from app.services.ceph_service import get_ceph_service
-    from app.services.load_balancing_service import get_load_balancing_service
-    
-    ceph = get_ceph_service()
-    lb = get_load_balancing_service()
-    
-    # 1. NOWE: Wybierz nod z najmniejszym obciążeniem
-    selected_node = await lb.select_best_node()
-    logger.info(f"Selected node for VM: {selected_node}")
-    
-    try:
-        # 2. Sprawdzaj Ceph health na wybranym nodzie
-        await ceph.check_ceph_health(selected_node)
-        
-        # 3. Sprawdzaj Ceph disk space
-        if not await ceph.validate_disk_space_for_vm(
-            settings.VM_DEFAULT_DISK_GB,
-            selected_node
-        ):
-            raise HTTPException(
-                status_code=507,
-                detail="Brak miejsca na Ceph dla nowej VM"
-            )
-        
-        # 4. Sprawdzaj czy nod jest здorow
-        is_healthy = await lb.is_node_healthy(selected_node)
-        if not is_healthy:
-            logger.warning(
-                f"Node {selected_node} above threshold, "
-                f"but no better options available"
-            )
-        
-        # 5. Alokuj VMID
-        result = await db.execute(
-            select(VMIDSequence)
-            .with_for_update(nowait=True)
-            .limit(1)
-        )
-        seq = result.scalar_one()
-        new_vm_id = seq.next_vm_id
-        seq.next_vm_id += 1
-        seq.last_allocated_at = datetime.now()
-        await db.commit()
-        
-        # 6. Alokuj IP
-        ip_result = await db.execute(
-            select(AllocatedIP)
-            .where(AllocatedIP.status == 'free')
-            .with_for_update(nowait=True)
-            .limit(1)
-        )
-        ip_record = ip_result.scalar_one_or_none()
-        
-        if not ip_record:
-            seq.next_vm_id -= 1
-            await db.commit()
-            raise HTTPException(
-                status_code=507,
-                detail="Brak dostępnych adresów IP"
-            )
-        
-        ip_address = ip_record.ip_address
-        ip_record.status = 'allocated'
-        ip_record.user_id = None
-        await db.commit()
-        
-        logger.info(f"✅ Resources allocated: VMID={new_vm_id}, IP={ip_address}, Node={selected_node}")
-        return new_vm_id, ip_address, selected_node
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Resource allocation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-# ============================================================================
-# FRAGMENT 2: Tworzenie VM w Proxmoxie z Ceph dyskiem
-# ============================================================================
-
-async def create_vm_in_proxmox(
-    proxmox,
-    vm_id: int,
-    vm_name: str,
-    ip_address: str,
-    node: str,
-    ssh_public_key: str
-) -> bool:
-    """
-    Stwórz VM w Proxmoxie z:
-    - Głównym dyskiem na Ceph RBD
-    - Cloud-init na local-lvm
-    - HA włączonym
-    """
-    try:
-        # Pobierz template path dla tego nodu
-        template_path = settings.VM_QCOW2_PATHS.get(
-            node,
-            settings.VM_QCOW2_PATH
-        )
-        
-        logger.info(
-            f"Creating VM {vm_id} on {node} from {template_path}"
-        )
-        
-        # Cloud-init config YAML
-        cloud_init_data = f"""#cloud-config
-hostname: {f'linuxedu-vm-{vm_id}'}
-manage_etc_hosts: localhost
-network:
-  version: 2
-  ethernets:
-    eth0:
-      dhcp4: false
-      addresses:
-        - {ip_address}/24
-      gateway4: 192.168.100.1
-      nameservers:
-        addresses: [8.8.8.8, 8.8.4.4]
-
-users:
-  - name: ubuntu
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh-authorized-keys:
-      - {ssh_public_key}
-
-package_update: true
-packages:
-  - curl
-  - wget
-  - net-tools
-  - openssh-server
-
-final_message: "System ready at $TIMESTAMP"
-"""
-        
-        # Parametry tworzenia VM
-        create_params = {
-            "newid": vm_id,
-            "name": vm_name,
-            "ide2": f"{settings.VM_CLOUDINIT_STORAGE}:cloudinit",  # Cloud-init na local
-            "cicustom": f"user=snippets/{vm_id}-user.yml",  # Custom cloud-init
-            "ciuser": "ubuntu",
-            "cipassword": "ignored",  # SSH key używany
-            "cores": settings.VM_DEFAULT_CORES,
-            "memory": settings.VM_DEFAULT_MEMORY_MB,
-            "sockets": 1,
-            "cpu": "host",
-            "agent": 1,
-        }
-        
-        # Disk config: Ceph RBD dla głównego dysku
-        scsi_disk = (
-            f"{settings.VM_STORAGE}:vm-{vm_id}-disk-0,"
-            f"size={settings.VM_DEFAULT_DISK_GB}G,discard=on,ssd=1"
-        )
-        create_params["scsi0"] = scsi_disk
-        create_params["scsi_controller"] = settings.VM_SCSI_CONTROLLER
-        
-        # Network
-        create_params["net0"] = f"virtio,bridge=vmbr1,firewall=1"
-        
-        # Stwórz VM poprzez clone z template'u
-        logger.info(f"Cloning template to VM {vm_id}...")
-        
-        clone_task = proxmox.nodes(node).qemu(100).clone.post(
-            newid=vm_id,
-            name=vm_name,
-            full=1,  # Full clone (nie linked clone)
-            storage=settings.VM_STORAGE,  # Docelowy storage: Ceph
-            target=node,
-        )
-        
-        # Czekaj na completion
-        task_id = clone_task.get('data')
-        await _wait_for_proxmox_task(proxmox, node, task_id, timeout=300)
-        
-        # Zaktualizuj konfigurację VM (nie da się w clone, trzeba po)
-        logger.info(f"Updating VM {vm_id} configuration...")
-        
-        proxmox.nodes(node).qemu(vm_id).config.put(**{
-            "cores": settings.VM_DEFAULT_CORES,
-            "memory": settings.VM_DEFAULT_MEMORY_MB,
-            "net0": "virtio,bridge=vmbr1,firewall=1",
-            "ide2": f"{settings.VM_CLOUDINIT_STORAGE}:cloudinit",
-        })
-        
-        # Startuj VM
-        logger.info(f"Starting VM {vm_id}...")
-        proxmox.nodes(node).qemu(vm_id).status.start.post()
-        
-        logger.info(f"✅ VM {vm_id} created and started successfully")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to create VM {vm_id}: {e}")
-        raise
-
-
-# ============================================================================
-# FRAGMENT 3: Włączenie HA dla VM
-# ============================================================================
-
-async def enable_ha_for_new_vm(vm_id: int, node: str):
-    """Włącz HA dla nowo stworzonej VM"""
-    try:
-        from app.services.ha_service import get_ha_service
-        
-        ha = get_ha_service()
-        success = await ha.enable_ha_for_vm(vm_id, node)
-        
-        if success:
-            logger.info(f"✅ HA enabled for VM {vm_id}")
-        else:
-            logger.warning(f"⚠️  HA not enabled for VM {vm_id} (optional)")
-        
-        return success
-    except Exception as e:
-        logger.warning(f"Could not enable HA: {e}")
-        return False
-
-
-# ============================================================================
-# FRAGMENT 4: Reset VM z obsługą migracji
-# ============================================================================
-
-async def reset_vm(
-    user_id: int,
-    vm_id: int,
-    db: AsyncSession,
-    proxmox
-) -> VM:
-    """
-    Reset VM - tworzy nową VM z templatu, usuwa starą.
-    Zachowuje IP i node jeśli możliwe.
-    """
-    try:
-        # Pobierz starą VM
-        result = await db.execute(
-            select(VM).where(
-                (VM.id == vm_id) &
-                (VM.user_id == user_id)
-            )
-        )
-        old_vm = result.scalar_one_or_none()
-        
-        if not old_vm:
-            raise HTTPException(status_code=404, detail="VM not found")
-        
-        old_proxmox_id = old_vm.proxmox_vm_id
-        old_ip = old_vm.ip_address
-        old_node = old_vm.node
-        
-        logger.info(f"Resetting VM {old_proxmox_id} (keeping IP {old_ip})...")
-        
-        # Sprawdzaj czy jest Ceph space
-        from app.services.ceph_service import get_ceph_service
-        ceph = get_ceph_service()
-        await ceph.check_ceph_health(old_node)
-        
-        # Alokuj nowy VMID (ale reuse IP!)
-        result = await db.execute(
-            select(VMIDSequence)
-            .with_for_update(nowait=True)
-        )
-        seq = result.scalar_one()
-        new_vm_id = seq.next_vm_id
-        seq.next_vm_id += 1
-        await db.commit()
-        
-        # Stwórz nową VM z nowym ID
-        new_vm_name = f"user-vm-{user_id}-{int(datetime.now().timestamp())}-reset"
-        
-        await create_vm_in_proxmox(
-            proxmox=proxmox,
-            vm_id=new_vm_id,
-            vm_name=new_vm_name,
-            ip_address=old_ip,
-            node=old_node,
-            ssh_public_key=await get_default_ssh_key(db)
-        )
-        
-        # Provisioning Ansible
-        success = await provision_vm_with_ansible(
-            new_vm_id,
-            old_ip,
-            proxmox
-        )
-        
-        if not success:
-            logger.error("Ansible provisioning failed during reset")
-            # Cleanup nowej VM
-            try:
-                proxmox.nodes(old_node).qemu(new_vm_id).delete()
-            except:
-                pass
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to provision new VM"
-            )
-        
-        # Update DB: zmień referencje na nową VM
-        old_vm.proxmox_vm_id = new_vm_id
-        old_vm.vm_status = VMStatus.RUNNING
-        old_vm.runtime_expires_at = datetime.now() + timedelta(hours=12)
-        old_vm.last_active_at = datetime.now()
-        
-        # Włącz HA dla nowej VM
-        await enable_ha_for_new_vm(new_vm_id, old_node)
-        
-        await db.commit()
-        await db.refresh(old_vm)
-        
-        # Usuń starą VM (async, nie blokuj)
-        asyncio.create_task(
-            _cleanup_old_vm_async(proxmox, old_node, old_proxmox_id)
-        )
-        
-        logger.info(
-            f"✅ VM reset complete: {old_proxmox_id} → {new_vm_id} "
-            f"on {old_node}, IP: {old_ip}"
-        )
-        
-        return old_vm
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Reset VM failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Reset failed: {str(e)}"
-        )
-
-
-async def _cleanup_old_vm_async(proxmox, node: str, vm_id: int):
-    """Asynchronicznie usuń starą VM"""
-    try:
-        await asyncio.sleep(10)  # Czekaj 10s żeby VM się dobrze bootowała
-        
-        logger.info(f"Cleaning up old VM {vm_id} on {node}...")
-        proxmox.nodes(node).qemu(vm_id).delete()
-        logger.info(f"✅ Old VM {vm_id} deleted")
-    except Exception as e:
-        logger.error(f"Failed to cleanup old VM {vm_id}: {e}")
-
-
-async def _wait_for_proxmox_task(proxmox, node: str, task_id: str, timeout: int = 300):
-    """Czekaj na completion Proxmox task'u"""
-    import time
-    start = time.time()
-    
-    while time.time() - start < timeout:
+    async def get_vm_stats(self, proxmox_vm_id: int, node: str) -> dict:
+        """Pobierz live statystyki VM z Proxmoxa"""
         try:
-            task_status = proxmox.nodes(node).tasks(task_id).status.get()
+            logger.debug(f"Fetching stats for VM {proxmox_vm_id} on node {node}")
             
-            if task_status.get('status') == 'stopped':
-                exitstatus = task_status.get('exitstatus', '')
-                if exitstatus == 'OK':
-                    logger.info(f"✅ Task {task_id} completed")
-                    return True
-                else:
-                    raise Exception(f"Task failed: {exitstatus}")
+            vmstatus = self.client.nodes(node).qemu(proxmox_vm_id).status.current.get()
             
-            await asyncio.sleep(1)
+            return {
+                'cpu_usage_percent': float(vmstatus.get('cpu', 0)) * 100,
+                'memory_usage_mb': float(vmstatus.get('mem', 0)) / (1024**2),
+                'memory_total_mb': float(vmstatus.get('maxmem', 0)) / (1024**2),
+                'disk_usage_gb': 0.0,
+                'disk_total_gb': 0.0,
+                'uptime_seconds': int(vmstatus.get('uptime', 0)),
+                'network_in_bytes': int(vmstatus.get('netin', 0)),
+                'network_out_bytes': int(vmstatus.get('netout', 0)),
+            }
         except Exception as e:
-            if "not found" in str(e):
-                # Task już ukończony
-                return True
+            logger.error(f"Error getting stats for VM {proxmox_vm_id}: {e}")
             raise
-    
-    raise TimeoutError(f"Task {task_id} timed out after {timeout}s")

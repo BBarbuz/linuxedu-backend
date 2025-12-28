@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     PROXMOX_TOKEN_ID: str
     PROXMOX_VERIFY_SSL: bool
     PROXMOX_NODES: List[str] = ["pve", "pve2", "pve3"]
-    PROXMOX_PRIMARY_NODE: str = "pve"
-    PROXMOX_NODE: str = "pve"  # Dla kompatybilności
+    PROXMOX_PRIMARY_NODE: str = "inz1borysmaciej"
+    PROXMOX_NODE: str = "inz1borysmaciej"
+    PROXMOX_TEMPLATE_VMID: int = 100  # default na wszelki wypadek
+
     
     # ===== CEPH STORAGE =====
     CEPH_POOL: str = "CephStorage"  # ✅ POPRAWNIE! ID z Proxmoxu
@@ -51,7 +53,7 @@ class Settings(BaseSettings):
     
     # ===== VM STORAGE =====
     VM_STORAGE: str = "CephStorage"  # ✅ POPRAWNIE! Główny dysk: Ceph RBD
-    VM_CLOUDINIT_STORAGE: str = "local-lvm"  # Cloud-init: local
+    VM_CLOUDINIT_STORAGE: str
     VM_SCSI_CONTROLLER: str = "virtio-scsi-pci"
     VM_QCOW2_PATH: str = "/var/lib/vz/template/qcow2/linuxedu-template.qcow2"
     VM_QCOW2_PATHS: dict = {

@@ -4,7 +4,7 @@ Virtual Machine Pydantic Schemas
 Request/Response schematy dla API VM.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -23,7 +23,7 @@ class VMStatusSchema(str, Enum):
     STOPPED = "stopped"
     FAILED = "failed"
     DELETED = "deleted"
-
+    CREATING = "creating"
 
 # ============================================================================
 # REQUEST SCHEMAS
@@ -96,6 +96,13 @@ class VMResponse(BaseModel):
     created_at: datetime
     runtime_expires_at: Optional[datetime] = None
     last_active_at: Optional[datetime] = None
+
+    @field_validator("ip_address", mode="before")
+    @classmethod
+    def ip_to_str(cls, v):
+        if v is None:
+            return None
+        return str(v)
 
     class Config:
         from_attributes = True
@@ -191,7 +198,7 @@ class VNCUrlResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "vnc_url": "https://novnc.example.com/vnc/?path=vm-200-token-xyz",
-                "expires_in_seconds": 1800,
+                "expires_in_seconds": 10000,
                 "vm_id": 200
             }
         }
@@ -203,14 +210,14 @@ class VMStatsResponse(BaseModel):
     Live statystyki VM (opcjonalnie).
     """
     vm_id: int
-    cpu_usage_percent: float
-    memory_usage_mb: int
-    memory_total_mb: int
-    disk_usage_gb: float
-    disk_total_gb: float
-    uptime_seconds: int
-    network_in_bytes: int
-    network_out_bytes: int
+    cpu_usage_percent: float = 0.0
+    memory_usage_mb: float = 0.0    # ← ✅ float
+    memory_total_mb: float = 0.0    # ← ✅ float
+    disk_usage_gb: float = 0.0
+    disk_total_gb: float = 0.0
+    uptime_seconds: int = 0
+    network_in_bytes: int = 0
+    network_out_bytes: int = 0
 
     class Config:
         json_schema_extra = {

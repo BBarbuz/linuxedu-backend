@@ -19,10 +19,3 @@ async def get_profile(current_user: User = Depends(get_current_user)):
         role=current_user.role,
         is_active=current_user.is_active
     )
-
-# @app.get("/profile")
-# async def get_profile(current_user_id = Depends(get_current_user), db: AsyncSession = Depends(getdb)):
-#     user = await db.get(User, current_user_id)
-#     if not user or not user.is_active:
-#         raise HTTPException(status_code=403, detail="Inactive user")
-#     return {"id": user.id, "username": user.username, "role": user.role}
