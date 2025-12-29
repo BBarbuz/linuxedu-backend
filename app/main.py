@@ -54,10 +54,6 @@ app.include_router(create_router())
 app.include_router(create_vm_router())
 
 # ===== Health Check =====
-@app.get("/")
-async def root():
-    return {"message": "LinuxEdu Backend ✅", "docs": "/docs"}
-
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "LinuxEdu"}
@@ -90,7 +86,6 @@ async def startup_event():
             token_value=settings.PROXMOX_TOKEN,
             verify_ssl=settings.PROXMOX_VERIFY_SSL,
         )
-
         logger.info("✅ Proxmox API connected")
         
         # ===== Init Services =====
@@ -105,19 +100,20 @@ async def startup_event():
         
 
         # ===== Start Background Tasks =====
+
         asyncio.create_task(
             get_vm_monitoring_service().monitor_vm_migrations(
                 AsyncSessionLocal(),
                 proxmox
             )
         )
-        logger.info("✅ VM monitoring started")
 
-        monitoring_service = get_vm_monitoring_service()
-        asyncio.create_task(
-            monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
-        )
+        # monitoring_service = get_vm_monitoring_service()
+        # asyncio.create_task(
+        #     monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
+        # )
         logger.info("✅ Continuous VM status monitoring started (every 5 seconds)")
+        logger.info("✅ VM monitoring started")
         
         logger.info("🎉 Backend startup complete!")
         

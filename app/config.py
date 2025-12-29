@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     PROXMOX_TOKEN: str
     PROXMOX_TOKEN_ID: str
     PROXMOX_VERIFY_SSL: bool
-    PROXMOX_NODES: List[str] = ["pve", "pve2", "pve3"]
+    PROXMOX_NODES: List[str] = ["inz1borysmaciej"] 
     PROXMOX_PRIMARY_NODE: str = "inz1borysmaciej"
     PROXMOX_NODE: str = "inz1borysmaciej"
     PROXMOX_TEMPLATE_VMID: int = 100  # default na wszelki wypadek

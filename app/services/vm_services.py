@@ -144,7 +144,7 @@ class ProxmoxService:
         path = f"/nodes/{self.node}/qemu/{vmid}/config"
 
         data = {
-            "ipconfig0": f"ip={ip_address}/24,gw=192.168.100.0",
+            "ipconfig0": f"ip={ip_address}/24,gw=192.168.100.1",
             "ciuser": "root",
             "nameserver": "8.8.8.8 8.8.4.4",
             "agent": "enabled=1"
@@ -154,43 +154,63 @@ class ProxmoxService:
         logger.info(f"✅ VM {vmid} configured with IP {ip_address}")
         return True
 
-    async def start_vm(self, vmid: int, max_wait: int = 60) -> bool:
+    async def start_vm(self, vmid: int, target_node: str, max_wait: int = 60) -> bool:
         """
-        Start VM w Proxmoxie i poczekaj aż naprawdę będzie 'running'.
-        max_wait – maksymalny czas w sekundach na dojście do running.
+        Start VM na konkretnym nodzie.
+        
+        Args:
+            vmid: Proxmox VM ID
+            target_node: Node z bazy users_vms (np. 'inz2borysmaciej')
+            max_wait: max czas czekania na 'running' (sekundy)
+        
+        Returns:
+            True jeśli VM osiągnęła stan 'running'
         """
-        path = f"/nodes/{self.node}/qemu/{vmid}/status/start"
-
-        # 1. Wyślij start – wynik zawiera UPID taska (lub pusty dict)
+        logger.info(f"🚀 Starting VM {vmid} on node '{target_node}'")
+        
+        # 1. Ścieżka z node z bazy (zamiast self.node!)
+        path = f"/nodes/{target_node}/qemu/{vmid}/status/start"
+        
+        # 2. Wyślij start command
         result = await self._proxmox_request("POST", path, {})
-
-        # UPID może być w data lub data["upid"] (zależnie od wersji)
+        
+        # 3. Wyciągnij UPID taska (opcjonalne)
         upid = None
         if isinstance(result, str):
             upid = result
         elif isinstance(result, dict):
             upid = result.get("upid") or result.get("data")
-
+        
         if upid:
-            logger.info(f"Start task UPID for VM {vmid}: {upid}")
-
-        # 2. Sprawdzaj status VM aż będzie 'running' lub timeout
-        for _ in range(max_wait):
-            status = await self.get_vm_status(vmid)
-            if status == "running":
-                logger.info(f"VM {vmid} is running")
-                return True
-            await asyncio.sleep(1)
-
-        logger.error(f"VM {vmid} did not reach 'running' state within {max_wait}s")
+            logger.info(f"📋 Start task UPID for VM {vmid}: {upid}")
+        
+        # 4. Czekaj aż VM będzie 'running' na TYM node
+        for i in range(max_wait):
+            try:
+                status = await self.get_vm_status(vmid, node=target_node)
+                if status == "running":
+                    logger.info(f"✅ VM {vmid} is running on {target_node}")
+                    return True
+                
+                if i % 10 == 0:  # Log co 10 sekund
+                    logger.debug(f"⏳ VM {vmid} status: {status} (wait {i+1}/{max_wait}s)")
+                
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.debug(f"Status check failed for VM {vmid}: {e}")
+                await asyncio.sleep(1)
+        
+        logger.error(f"❌ VM {vmid} did not reach 'running' within {max_wait}s on {target_node}")
         return False
 
-    async def shutdown_vm(self, vmid: int, max_wait: int = 60) -> bool:
+
+    async def shutdown_vm(self, vmid: int, target_node: str, max_wait: int = 60) -> bool:
         """
         Graceful shutdown VM i poczekaj aż status będzie 'stopped'.
         max_wait – maksymalny czas w sekundach na wyłączenie VM.
         """
-        path = f"/nodes/{self.node}/qemu/{vmid}/status/shutdown"
+        logger.info(f"🛑 SHUTDOWN START: VM {vmid} on '{target_node}'")
+        path = f"/nodes/{target_node}/qemu/{vmid}/status/shutdown"
 
         # 1. Wyślij żądanie shutdown – może zwrócić UPID
         result = await self._proxmox_request("POST", path, {})
@@ -205,8 +225,9 @@ class ProxmoxService:
             logger.info(f"Shutdown task UPID for VM {vmid}: {upid}")
 
         # 2. Sprawdzaj status VM aż będzie 'stopped' albo timeout
-        for _ in range(max_wait):
-            status = await self.get_vm_status(vmid)
+        for i in range(max_wait):
+            status = await self.get_vm_status(vmid, target_node)
+            logger.info(f"⏳ VM {vmid} [{i+1}/{max_wait}s]: '{status}' on {target_node}")  
             if status == "stopped":
                 logger.info(f"✅ VM {vmid} is stopped")
                 return True
@@ -273,13 +294,15 @@ class ProxmoxService:
         logger.info(f"VM destroyed: {vmid}")
         return True
 
-    async def get_vm_status(self, vmid: int) -> str:
+    async def get_vm_status(self, vmid: int, node: str = None) -> str:
         """Get current VM status (running, stopped, etc)."""
-        path = f"/nodes/{self.node}/qemu/{vmid}/status/current"
+        target_node = node if node else self.node
+        path = f"/nodes/{target_node}/qemu/{vmid}/status/current"
         result = await self._proxmox_request("GET", path)
         status_str = result.get("status", "unknown")
-        logger.debug(f"VM {vmid} status: {status_str}")
+        logger.debug(f"VM {vmid} status on {target_node}: {status_str}")
         return status_str
+
 
     async def poll_vm_ready(self, vmid: int, max_attempts: int = 30, interval: int = 1) -> bool:
         """
@@ -656,7 +679,7 @@ class VMService:
             )
 
         # 1. Start w Proxmoxie + oczekiwanie na 'running'
-        ok = await self.proxmox.start_vm(vm.proxmox_vm_id)
+        ok = await self.proxmox.start_vm(vm.proxmox_vm_id, vm.node)
         if not ok:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -678,7 +701,7 @@ class VMService:
         """Stop VM z potwierdzeniem z Proxmoxa."""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
-        ok = await self.proxmox.shutdown_vm(vm.proxmox_vm_id)
+        ok = await self.proxmox.shutdown_vm(vm.proxmox_vm_id, vm.node)
         if not ok:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

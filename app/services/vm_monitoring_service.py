@@ -24,60 +24,119 @@ class VMMonitoringService:
         self.proxmox = proxmox
         self.check_interval = settings.VM_NODE_CHECK_INTERVAL
         self.migration_alert_enabled = settings.VM_MIGRATION_ALERT_ENABLED
-        self.proxmox_service = ProxmoxService(settings)  # ← NOWA LINIA
+        self.proxmox_service = ProxmoxService(settings)
 
     
     async def get_vm_location(self, vm_id: int, node: str = None) -> dict:
-        """
-        Pobierz informacje o lokalizacji VM w Proxmoxie.
-        
-        Returns:
-            {
-                "vm_id": 123,
-                "current_node": "pve2",
-                "status": "running",
-                "cpu_usage": 15.5,
-                "memory_usage": 1024,
-                "uptime": 3600
-            }
-        """
+        """Async wrapper na sync funkcję"""
         try:
-            # Jeśli znamy node, sprawdzaj tam najpierw
-            if node:
-                try:
-                    result = self._check_vm_on_node(vm_id, node)
-                    if result:
-                        return result
-                except:
-                    pass
-            
-            # Szukaj VM na wszystkich nodach
-            for check_node in settings.PROXMOX_NODES:
-                try:
-                    result = self._check_vm_on_node(vm_id, check_node)
-                    if result:
-                        return result
-                except:
-                    continue
-            
-            raise HTTPException(
-                status_code=404,
-                detail=f"VM {vm_id} nie znaleziona na żadnym nodzie"
+            location = await asyncio.to_thread(
+                self._check_vm_on_node_sync,
+                vm_id,
+                node
             )
+            if location:
+                return location
             
-        except HTTPException:
-            raise
+            # Szukaj na innych nodach
+            for check_node in settings.PROXMOX_NODES:
+                location = await asyncio.to_thread(
+                    self._check_vm_on_node_sync,
+                    vm_id,
+                    check_node
+                )
+                if location:
+                    return location
+            
+            raise HTTPException(status_code=404)
         except Exception as e:
             logger.error(f"Error getting VM location: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"Nie można pobrać informacji o VM: {str(e)}"
-            )
+            raise
+
     
-    def _check_vm_on_node(self, vm_id: int, node: str) -> dict:
+    async def monitor_vm_migrations(self, db: AsyncSession, proxmox: ProxmoxAPI):
+        """Monitorowanie migracji VM"""
+        logger.info("🔍 Starting VM migration monitor...")
+        logger.info(f"📋 PROXMOX_NODES: {settings.PROXMOX_NODES}")
+
+        
+        while True:
+            session_active = True
+            try:
+                # 1. POBIERZ VM
+                result = await db.execute(
+                    select(VM).where(
+                        VM.vm_status.in_([
+                            VMStatus.RUNNING, 
+                            VMStatus.STOPPED, 
+                            VMStatus.CREATED, 
+                            VMStatus.READY
+                        ])
+                    )
+                )
+                vms = result.scalars().all()
+                logger.debug(f"Checking {len(vms)} VMs for migration...")
+                
+                for vm in vms:
+                    try:
+                        # 2. TIMEOUT na pobieranie lokacji (30 sekund max)
+                        try:
+                            location = await asyncio.wait_for(
+                                self.get_vm_location(vm.proxmox_vm_id),  # Szuka na WSZYSTKICH nodach!
+                                timeout=10.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Timeout checking VM {vm.proxmox_vm_id}")
+                            continue
+                        
+                        if not location:
+                            continue
+                        
+                        current_node = location.get('current_node')
+                        
+                        # 3. ZMIANA NOXA?
+                        if current_node and current_node != vm.node:
+                            old_node = vm.node
+                            vm.node = current_node
+                            
+                            logger.warning(
+                                f"🚀 VM {vm.proxmox_vm_id} MIGRATED: "
+                                f"{old_node} → {current_node}"
+                            )
+                            
+                            # Alert
+                            if self.migration_alert_enabled:
+                                await self._send_migration_alert(
+                                    vm.id, vm.user_id, old_node, current_node
+                                )
+                            
+                            await db.flush()  # ← FLUSH przed commit!
+                            await db.commit()
+                            logger.info(f"✅ VM {vm.proxmox_vm_id} migration recorded")
+
+                        else:
+                            # ✅ WSZYSTKO OK - log DEBUG (tylko jeśli DEBUG włączony)
+                            logger.debug(f"✅ VM {vm.proxmox_vm_id} OK on {current_node}")
+                        
+                    except Exception as e:
+                        logger.debug(f"Error checking VM {vm.proxmox_vm_id}: {e}")
+                        await db.rollback()  # ← Rollback na błąd!
+                        continue
+                
+                # 4. CZEKAJ
+                await asyncio.sleep(self.check_interval)
+                
+            except Exception as e:
+                logger.error(f"VM migration monitor error: {e}", exc_info=True)
+                try:
+                    await db.rollback()
+                except:
+                    pass
+                await asyncio.sleep(self.check_interval)
+
+    def _check_vm_on_node_sync(self, vm_id: int, node: str) -> dict:
         """
-        Sprawdź czy VM istnieje na konkretnym nodzie i pobierz info.
-        Zwraca None jeśli VM nie istnieje na tym nodzie.
+        SYNC wersja - będzie w threadzie, nie blokuje event loop
         """
         try:
             vm_info = self.proxmox.nodes(node).qemu(vm_id).status.current.get()
@@ -92,66 +151,9 @@ class VMMonitoringService:
                 "memory_max": vm_info.get('maxmem', 0),
             }
         except Exception:
-            # VM nie na tym nodzie
             return None
-    
-    async def monitor_vm_migrations(self, db: AsyncSession, proxmox: ProxmoxAPI):
-        """
-        Periodycznie sprawdzaj czy VM nie migratory na inny nod.
-        
-        Jeśli VM została zmigrowna, zaktualizuj BD i wyślij alert.
-        Ta funkcja powinna być uruchomiana jako background task.
-        """
-        logger.info("🔍 Starting VM migration monitor...")
-        
-        while True:
-            try:
-                # Pobierz wszystkie aktywne VM
-                result = await db.execute(
-                    select(VM).where(
-                        (VM.vm_status.in_(["running", "stopped"]))
-                    )
-                )
-                vms = result.scalars().all()
-                
-                for vm in vms:
-                    try:
-                        # Sprawdź aktualną lokalizację
-                        location = await self.get_vm_location(
-                            vm.proxmox_vm_id,
-                            node=vm.node  # Szukaj najpierw na znanych nodzie
-                        )
-                        
-                        current_node = location.get('current_node')
-                        
-                        # Sprawdź czy VM się migratory
-                        if current_node != vm.node:
-                            old_node = vm.node
-                            vm.node = current_node
-                            
-                            logger.warning(
-                                f"🚀 VM {vm.proxmox_vm_id} MIGRATED: "
-                                f"{old_node} → {current_node}"
-                            )
-                            
-                            # Alert jeśli włączony
-                            if self.migration_alert_enabled:
-                                await self._send_migration_alert(
-                                    vm.id, vm.user_id, old_node, current_node
-                                )
-                            
-                            await db.commit()
-                        
-                    except Exception as e:
-                        logger.debug(f"Error monitoring VM {vm.proxmox_vm_id}: {e}")
-                        continue
-                
-                # Czekaj przed następną iteracją
-                await asyncio.sleep(self.check_interval)
-                
-            except Exception as e:
-                logger.error(f"VM monitoring error: {e}")
-                await asyncio.sleep(self.check_interval)
+
+
     
     async def _send_migration_alert(
         self,
@@ -242,7 +244,6 @@ class VMMonitoringService:
                                 vm.vm_status = VMStatus.RUNNING
                             elif proxmox_status == "stopped":
                                 vm.vm_status = VMStatus.STOPPED
-                            logger.info("I am here(every 5 seconds)")
                             await db.commit()
                             
                             logger.warning(
