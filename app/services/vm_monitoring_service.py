@@ -11,6 +11,8 @@ from proxmoxer import ProxmoxAPI
 
 from app.config import settings
 from app.models import VM
+from app.models.vm import VMStatus
+from app.services.vm_services import ProxmoxService
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,8 @@ class VMMonitoringService:
         self.proxmox = proxmox
         self.check_interval = settings.VM_NODE_CHECK_INTERVAL
         self.migration_alert_enabled = settings.VM_MIGRATION_ALERT_ENABLED
+        self.proxmox_service = ProxmoxService(settings)  # ← NOWA LINIA
+
     
     async def get_vm_location(self, vm_id: int, node: str = None) -> dict:
         """
@@ -205,6 +209,58 @@ class VMMonitoringService:
         except Exception as e:
             logger.error(f"Error getting cluster status: {e}")
             raise
+
+
+    async def monitor_vm_status_continuous(self, db: AsyncSession):
+        """
+        Co 5 sekund sprawdza RUNNING/STOPPED status VM z Proxmoxa
+        i aktualizuje bazę danych
+        """
+        logger.info("Starting continuous VM status monitor (every 5 seconds)")
+        
+        while True:
+            try:
+                # 1. POBIERZ wszystkie VM z bazy (nie deleted)
+                result = await db.execute(
+                    select(VM).where(
+                        VM.vm_status.in_([VMStatus.RUNNING, VMStatus.STOPPED, VMStatus.CREATED, VMStatus.READY])
+                    )
+                )
+                vms = result.scalars().all()
+                
+                for vm in vms:
+                    try:
+                        # 2. SPRAWDZAJ status na Proxmoxie (z funkcji już istniejącej)
+                        proxmox_status = await self.proxmox_service.get_vm_status(vm.proxmox_vm_id)
+                        
+                        # 3. PORÓWNAJ z bazą
+                        if vm.vm_status.value != proxmox_status:
+                            old_status = vm.vm_status.value
+                            
+                            # 4. UPDATE BAZA
+                            if proxmox_status == "running":
+                                vm.vm_status = VMStatus.RUNNING
+                            elif proxmox_status == "stopped":
+                                vm.vm_status = VMStatus.STOPPED
+                            logger.info("I am here(every 5 seconds)")
+                            await db.commit()
+                            
+                            logger.warning(
+                                f"VM {vm.proxmox_vm_id} status changed: "
+                                f"{old_status} → {proxmox_status}"
+                            )
+                    
+                    except Exception as e:
+                        logger.debug(f"Error monitoring VM {vm.proxmox_vm_id}: {e}")
+                        continue
+                
+                # 5. CZEKAJ 5 sekund
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                logger.error(f"Continuous VM status monitor error: {e}")
+                await asyncio.sleep(5)
+
 
 
 # Singleton

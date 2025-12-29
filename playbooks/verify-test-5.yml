@@ -1,0 +1,572 @@
+---
+# ============================================================================
+# LinuxEdu - Test 2: User Management with Sudo Verification Playbook
+# File: verify_task_2.yml (Zarządzanie Użytkownikami)
+# Purpose: Verify all user management tasks from test 2
+# ============================================================================
+
+- name: Test 2 Verification - User Management & Sudo Configuration
+  hosts: all
+  gather_facts: yes
+
+  vars:
+    test_results: []
+    report_file: "/tmp/task2_results_{{ inventory_hostname }}.json"
+    local_reports_dir: "/tmp/task2_reports"
+
+  pre_tasks:
+    - name: Initialize results
+      set_fact:
+        test_results: []
+      tags: always
+
+  tasks:
+    # ==========================================
+    # TASK 1: GROUP VERIFICATION
+    # ==========================================
+    - name: "TEST 1: Group 'developers' exists with GID 3001"
+      block:
+        - name: Check group exists and GID is correct
+          shell: "getent group developers | grep -q ':3001:'"
+          register: group_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 1, 'task_name': 'Group developers (GID 3001)', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 1, 'task_name': 'Group developers (GID 3001)', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 2: USER 1 VERIFICATION
+    # ==========================================
+    - name: "TEST 2: User dev_user1 exists with UID 2001"
+      block:
+        - name: Check user exists with correct UID
+          shell: "id dev_user1 | grep -q 'uid=2001'"
+          register: user1_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 2, 'task_name': 'User dev_user1 (UID 2001)', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 2, 'task_name': 'User dev_user1 (UID 2001)', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 3: USER 2 VERIFICATION
+    # ==========================================
+    - name: "TEST 3: User dev_user2 exists with UID 2002"
+      block:
+        - name: Check user exists with correct UID
+          shell: "id dev_user2 | grep -q 'uid=2002'"
+          register: user2_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 3, 'task_name': 'User dev_user2 (UID 2002)', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 3, 'task_name': 'User dev_user2 (UID 2002)', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 4: GROUP MEMBERSHIP - dev_user1
+    # ==========================================
+    - name: "TEST 4: dev_user1 in group developers"
+      block:
+        - name: Check membership
+          shell: "groups dev_user1 | grep -q developers"
+          register: member1_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 4, 'task_name': 'dev_user1 in developers group', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 4, 'task_name': 'dev_user1 in developers group', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 5: GROUP MEMBERSHIP - dev_user2
+    # ==========================================
+    - name: "TEST 5: dev_user2 in group developers"
+      block:
+        - name: Check membership
+          shell: "groups dev_user2 | grep -q developers"
+          register: member2_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 5, 'task_name': 'dev_user2 in developers group', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 5, 'task_name': 'dev_user2 in developers group', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 6: WHEEL GROUP MEMBERSHIP - dev_user1
+    # ==========================================
+    - name: "TEST 6: dev_user1 in group wheel"
+      block:
+        - name: Check wheel group membership
+          shell: "groups dev_user1 | grep -q wheel"
+          register: wheel1_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 6, 'task_name': 'dev_user1 in wheel group', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 6, 'task_name': 'dev_user1 in wheel group', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 7: WHEEL GROUP MEMBERSHIP - dev_user2
+    # ==========================================
+    - name: "TEST 7: dev_user2 in group wheel"
+      block:
+        - name: Check wheel group membership
+          shell: "groups dev_user2 | grep -q wheel"
+          register: wheel2_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 7, 'task_name': 'dev_user2 in wheel group', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 7, 'task_name': 'dev_user2 in wheel group', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 8: SUDOERS FILE EXISTENCE
+    # ==========================================
+    - name: "TEST 8: Sudoers file /etc/sudoers.d/developers exists"
+      block:
+        - name: Check sudoers file
+          stat:
+            path: "/etc/sudoers.d/developers"
+          register: sudoers_stat
+
+        - name: Verify file exists
+          assert:
+            that:
+              - sudoers_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 8, 'task_name': 'Sudoers file exists', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 8, 'task_name': 'Sudoers file exists', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 9: SUDOERS NOPASSWD CONFIGURATION
+    # ==========================================
+    - name: "TEST 9: Sudoers NOPASSWD configured for developers"
+      block:
+        - name: Check NOPASSWD in sudoers
+          shell: "cat /etc/sudoers.d/developers | grep -q NOPASSWD"
+          register: nopasswd_check
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 9, 'task_name': 'Sudoers NOPASSWD configured', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 9, 'task_name': 'Sudoers NOPASSWD configured', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 10: HOME DIRECTORIES
+    # ==========================================
+    - name: "TEST 10: Home directory dev_user1 exists"
+      block:
+        - name: Check home directory
+          stat:
+            path: "/home/dev_user1"
+          register: home1_stat
+
+        - name: Verify directory exists
+          assert:
+            that:
+              - home1_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 10, 'task_name': 'Home /home/dev_user1 exists', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 10, 'task_name': 'Home /home/dev_user1 exists', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 11: HOME DIRECTORIES - USER 2
+    # ==========================================
+    - name: "TEST 11: Home directory dev_user2 exists"
+      block:
+        - name: Check home directory
+          stat:
+            path: "/home/dev_user2"
+          register: home2_stat
+
+        - name: Verify directory exists
+          assert:
+            that:
+              - home2_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 11, 'task_name': 'Home /home/dev_user2 exists', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 11, 'task_name': 'Home /home/dev_user2 exists', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 12: SSH DIRECTORIES
+    # ==========================================
+    - name: "TEST 12: SSH dir dev_user1 exists"
+      block:
+        - name: Check directory
+          stat:
+            path: "/home/dev_user1/.ssh"
+          register: ssh1_stat
+
+        - name: Verify directory exists
+          assert:
+            that:
+              - ssh1_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 12, 'task_name': 'SSH /home/dev_user1/.ssh exists', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 12, 'task_name': 'SSH /home/dev_user1/.ssh exists', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 13: SSH DIRECTORIES - USER 2
+    # ==========================================
+    - name: "TEST 13: SSH dir dev_user2 exists"
+      block:
+        - name: Check directory
+          stat:
+            path: "/home/dev_user2/.ssh"
+          register: ssh2_stat
+
+        - name: Verify directory exists
+          assert:
+            that:
+              - ssh2_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 13, 'task_name': 'SSH /home/dev_user2/.ssh exists', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 13, 'task_name': 'SSH /home/dev_user2/.ssh exists', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 14: SSH PERMISSIONS - dev_user1
+    # ==========================================
+    - name: "TEST 14: SSH dir dev_user1 has 0700 permissions"
+      block:
+        - name: Check permissions
+          shell: "test $(stat -c %a /home/dev_user1/.ssh) = 700"
+          register: ssh1_perm
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 14, 'task_name': 'SSH dev_user1 perms 0700', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 14, 'task_name': 'SSH dev_user1 perms 0700', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 15: SSH PERMISSIONS - dev_user2
+    # ==========================================
+    - name: "TEST 15: SSH dir dev_user2 has 0700 permissions"
+      block:
+        - name: Check permissions
+          shell: "test $(stat -c %a /home/dev_user2/.ssh) = 700"
+          register: ssh2_perm
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 15, 'task_name': 'SSH dev_user2 perms 0700', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 15, 'task_name': 'SSH dev_user2 perms 0700', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 16: TEST FILES
+    # ==========================================
+    - name: "TEST 16: Test file dev_user1 exists"
+      block:
+        - name: Check file
+          stat:
+            path: "/home/dev_user1/test_file.txt"
+          register: file1_stat
+
+        - name: Verify file exists
+          assert:
+            that:
+              - file1_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 16, 'task_name': 'Test file /home/dev_user1/test_file.txt', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 16, 'task_name': 'Test file /home/dev_user1/test_file.txt', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 17: TEST FILES - USER 2
+    # ==========================================
+    - name: "TEST 17: Test file dev_user2 exists"
+      block:
+        - name: Check file
+          stat:
+            path: "/home/dev_user2/test_file.txt"
+          register: file2_stat
+
+        - name: Verify file exists
+          assert:
+            that:
+              - file2_stat.stat.exists
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 17, 'task_name': 'Test file /home/dev_user2/test_file.txt', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 17, 'task_name': 'Test file /home/dev_user2/test_file.txt', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 18: FILE PERMISSIONS - dev_user1
+    # ==========================================
+    - name: "TEST 18: Test file dev_user1 has 0600 permissions"
+      block:
+        - name: Check permissions
+          shell: "test $(stat -c %a /home/dev_user1/test_file.txt) = 600"
+          register: file1_perm
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 18, 'task_name': 'File dev_user1 perms 0600', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 18, 'task_name': 'File dev_user1 perms 0600', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 19: FILE PERMISSIONS - dev_user2
+    # ==========================================
+    - name: "TEST 19: Test file dev_user2 has 0600 permissions"
+      block:
+        - name: Check permissions
+          shell: "test $(stat -c %a /home/dev_user2/test_file.txt) = 600"
+          register: file2_perm
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 19, 'task_name': 'File dev_user2 perms 0600', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 19, 'task_name': 'File dev_user2 perms 0600', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 20: SUDO FUNCTIONALITY - dev_user1
+    # ==========================================
+    - name: "TEST 20: Sudo works for dev_user1"
+      block:
+        - name: Check sudo
+          shell: "sudo -u dev_user1 sudo whoami | grep -q root"
+          register: sudo1_test
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 20, 'task_name': 'Sudo works dev_user1', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 20, 'task_name': 'Sudo works dev_user1', 'status': 'FAILED', 'passed': false}] }}"
+
+    # ==========================================
+    # TASK 21: SUDO FUNCTIONALITY - dev_user2
+    # ==========================================
+    - name: "TEST 21: Sudo works for dev_user2"
+      block:
+        - name: Check sudo
+          shell: "sudo -u dev_user2 sudo whoami | grep -q root"
+          register: sudo2_test
+          changed_when: false
+
+        - name: Add result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 21, 'task_name': 'Sudo works dev_user2', 'status': 'OK', 'passed': true}] }}"
+
+      rescue:
+        - name: Add failed result
+          set_fact:
+            test_results: "{{ test_results + [{'task_number': 21, 'task_name': 'Sudo works dev_user2', 'status': 'FAILED', 'passed': false}] }}"
+
+  post_tasks:
+    # ==========================================
+    # CALCULATE SUMMARY
+    # ==========================================
+    - name: Calculate statistics
+      set_fact:
+        total_tests: "{{ test_results | length }}"
+        passed_tests: "{{ test_results | selectattr('passed', 'equalto', true) | list | length }}"
+        failed_tests: "{{ test_results | selectattr('passed', 'equalto', false) | list | length }}"
+        overall_status: "{{ 'PASS' if (test_results | selectattr('passed', 'equalto', false) | list | length) == 0 else 'FAIL' }}"
+        current_timestamp: "{{ ansible_date_time.iso8601 }}"
+      tags: always
+
+    # ==========================================
+    # PREPARE JSON REPORT ON VM
+    # ==========================================
+    - name: "SAVE: Generate JSON report on VM"
+      copy:
+        content: |
+          {
+            "test_id": 2,
+            "test_name": "Zarządzanie Użytkownikami",
+            "hostname": "{{ inventory_hostname }}",
+            "timestamp": "{{ current_timestamp }}",
+            "overall_status": "{{ overall_status }}",
+            "summary": {
+              "total_tests": {{ total_tests }},
+              "passed": {{ passed_tests }},
+              "failed": {{ failed_tests }},
+              "score": "{{ passed_tests }}/{{ total_tests }}"
+            },
+            "results": [
+              {% for result in test_results %}
+              {
+                "task_number": {{ result.task_number }},
+                "task_name": "{{ result.task_name }}",
+                "status": "{{ result.status }}",
+                "passed": {{ result.passed | lower }}
+              }{{ "," if not loop.last else "" }}
+              {% endfor %}
+            ]
+          }
+        dest: "{{ report_file }}"
+        mode: '0644'
+      tags: always
+
+    # ==========================================
+    # FETCH JSON REPORT TO HOST
+    # ==========================================
+    - name: "FETCH: Create local reports directory on host"
+      file:
+        path: "{{ local_reports_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+      tags: always
+
+    - name: "FETCH: Copy JSON report from VM to host"
+      fetch:
+        src: "{{ report_file }}"
+        dest: "{{ local_reports_dir }}/{{ inventory_hostname }}_task2_results.json"
+        flat: yes
+      tags: always
+
+    # ==========================================
+    # PRINT CONSOLE OUTPUT
+    # ==========================================
+    - name: "PRINT: Detailed test results"
+      debug:
+        msg: |
+          TEST 2: Zarządzanie Użytkownikami
+          HOST: {{ inventory_hostname }}
+          
+          {% for result in test_results %}
+          [{{ result.task_number }}] {{ result.task_name }}: {{ result.status }}
+          {% endfor %}
+      tags: always
+
+    - name: "PRINT: Summary"
+      debug:
+        msg: |
+          
+          ╔════════════════════════════════════════╗
+          ║     TEST 2 VERIFICATION COMPLETE      ║
+          ║  Test: Zarządzanie Użytkownikami      ║
+          ║  Status: {{ overall_status }}         ║
+          ╚════════════════════════════════════════╝
+          
+          Total Tests: {{ total_tests }}
+          Passed: {{ passed_tests }}
+          Failed: {{ failed_tests }}
+          Score: {{ passed_tests }}/{{ total_tests }}
+          
+          VM Report: {{ report_file }}
+          Host Report: {{ local_reports_dir }}/{{ inventory_hostname }}_task2_results.json
+          
+      tags: always
+
+    - name: "PRINT: All reports location on host"
+      debug:
+        msg: |
+          
+          Reports saved to host:
+          {{ local_reports_dir }}/
+          
+          View all reports:
+          ls -la {{ local_reports_dir }}/
+          
+          View specific report:
+          cat {{ local_reports_dir }}/{{ inventory_hostname }}_task2_results.json
+          
+      run_once: true
+      delegate_to: localhost
+      tags: always

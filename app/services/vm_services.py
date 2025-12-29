@@ -21,9 +21,7 @@ from app.models.user import User
 from app.config import settings
 from app.services.proxmox_client import get_proxmox_client
 
-
 logger = logging.getLogger(__name__)
-
 
 # ============================================================================
 # PROXMOX SERVICE
@@ -89,7 +87,7 @@ class ProxmoxService:
 
                 if response.status_code in [200, 201]:
                     data = response.json().get("data", {})
-                    return data  # tu może być UPID przy długich taskach
+                    return data
                 elif response.status_code >= 500 and attempt < retry_count - 1:
                     # Server error - retry
                     wait_time = 2 ** attempt
@@ -151,7 +149,6 @@ class ProxmoxService:
             "nameserver": "8.8.8.8 8.8.4.4",
             "agent": "enabled=1"
         }
-        #"ide2": f"{settings.VM_CLOUDINIT_STORAGE}:cloudinit",
 
         await self._proxmox_request("PUT", path, data)
         logger.info(f"✅ VM {vmid} configured with IP {ip_address}")
@@ -177,15 +174,15 @@ class ProxmoxService:
         if upid:
             logger.info(f"Start task UPID for VM {vmid}: {upid}")
 
-        # 2. Polluj status VM aż będzie 'running' lub timeout
+        # 2. Sprawdzaj status VM aż będzie 'running' lub timeout
         for _ in range(max_wait):
             status = await self.get_vm_status(vmid)
             if status == "running":
-                logger.info(f"✅ VM {vmid} is running")
+                logger.info(f"VM {vmid} is running")
                 return True
             await asyncio.sleep(1)
 
-        logger.error(f"❌ VM {vmid} did not reach 'running' state within {max_wait}s")
+        logger.error(f"VM {vmid} did not reach 'running' state within {max_wait}s")
         return False
 
     async def shutdown_vm(self, vmid: int, max_wait: int = 60) -> bool:
@@ -207,7 +204,7 @@ class ProxmoxService:
         if upid:
             logger.info(f"Shutdown task UPID for VM {vmid}: {upid}")
 
-        # 2. Polluj status VM aż będzie 'stopped' albo timeout
+        # 2. Sprawdzaj status VM aż będzie 'stopped' albo timeout
         for _ in range(max_wait):
             status = await self.get_vm_status(vmid)
             if status == "stopped":
@@ -215,7 +212,7 @@ class ProxmoxService:
                 return True
             await asyncio.sleep(1)
 
-        logger.error(f"❌ VM {vmid} did not reach 'stopped' state within {max_wait}s")
+        logger.error(f"VM {vmid} did not reach 'stopped' state within {max_wait}s")
         return False
 
     async def reboot_vm(self, vmid: int, max_wait: int = 120) -> bool:
@@ -237,7 +234,7 @@ class ProxmoxService:
         if upid:
             logger.info(f"Reboot task UPID for VM {vmid}: {upid}")
 
-        # 2. Polluj status VM: najpierw stopped, potem running
+        # 2. Sprawdzaj status VM: najpierw stopped, potem running
         for _ in range(max_wait):
             status = await self.get_vm_status(vmid)
             
@@ -273,7 +270,7 @@ class ProxmoxService:
         rbd_cmd = f"rbd -p {self.ceph_pool} rm {rbd_name}"
         await self._ssh_execute(rbd_cmd)
         
-        logger.info(f"✅ VM destroyed: {vmid}")
+        logger.info(f"VM destroyed: {vmid}")
         return True
 
     async def get_vm_status(self, vmid: int) -> str:
@@ -300,7 +297,7 @@ class ProxmoxService:
             try:
                 status = await self.get_vm_status(vmid)
                 if status == "running":
-                    logger.info(f"✅ VM {vmid} is ready after {attempt} attempts")
+                    logger.info(f"VM {vmid} is ready after {attempt} attempts")
                     return True
             except Exception as e:
                 logger.debug(f"Poll attempt {attempt + 1}: {e}")
@@ -312,17 +309,16 @@ class ProxmoxService:
 
     async def get_vnc_url(self, vmid: int, expiry_seconds: int = 1800) -> str:
         """
-        Get VNC URL w formacie Proxmox noVNC (działający!).
+        Get VNC URL w formacie Proxmox noVNC
         """
         try:
-            # Format IDENTYCZNY jak działający link z Proxmox
             vncurl = (
                 f"https://{settings.PROXMOX_HOST}:8006/?"
                 f"console=kvm&"
                 f"novnc=1&"
                 f"node={self.node}&"
                 f"vmid={vmid}&"
-                f"vmname=user-vm-{vmid}&"  # opcjonalnie
+                f"vmname=user-vm-{vmid}&"
                 f"resize=off"
             )
             
@@ -374,7 +370,7 @@ class ProxmoxService:
             upid = result.get("upid") or result.get("data")
 
         if not upid:
-            logger.error("❌ No UPID returned for clone task")
+            logger.error("No UPID returned for clone task")
             return False
 
         logger.info(f"Clone task UPID for VM {new_vmid}: {upid}")
@@ -394,12 +390,12 @@ class ProxmoxService:
                     logger.info(f"✅ Clone task finished OK: {upid}")
                     return True
                 else:
-                    logger.error(f"❌ Clone failed: {exit_status}")
+                    logger.error(f"Clone failed: {exit_status}")
                     return False
 
             await asyncio.sleep(1)
 
-        logger.error(f"❌ Clone task timeout after {max_wait}s: {upid}")
+        logger.error(f"Clone task timeout after {max_wait}s: {upid}")
         return False
 
 

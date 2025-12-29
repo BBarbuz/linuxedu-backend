@@ -17,6 +17,15 @@ from app.services.ha_service import init_ha_service
 from app.services.vm_monitoring_service import init_vm_monitoring_service, get_vm_monitoring_service
 from app.database import AsyncSessionLocal
 from proxmoxer import ProxmoxAPI
+import sys
+
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+    force=True  # ← Ważne! Przesłania inne konfiguracje
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +86,11 @@ async def startup_event():
         proxmox = ProxmoxAPI(
             settings.PROXMOX_HOST,
             user=settings.PROXMOX_USER,
-            token_name=settings.PROXMOX_TOKEN_ID,   # było "YOUR-TOKEN-NAME"
-            token_value=settings.PROXMOX_TOKEN,     # secret z .env
+            token_name=settings.PROXMOX_TOKEN_ID,
+            token_value=settings.PROXMOX_TOKEN,
             verify_ssl=settings.PROXMOX_VERIFY_SSL,
         )
 
-        
         logger.info("✅ Proxmox API connected")
         
         # ===== Init Services =====
@@ -95,9 +103,7 @@ async def startup_event():
         init_vm_monitoring_service(proxmox)
         logger.info("✅ VM monitoring service initialized")
         
-        init_load_balancing_service(proxmox)
-        logger.info("✅ Load balancing service initialized")
-        
+
         # ===== Start Background Tasks =====
         asyncio.create_task(
             get_vm_monitoring_service().monitor_vm_migrations(
@@ -106,9 +112,12 @@ async def startup_event():
             )
         )
         logger.info("✅ VM monitoring started")
-        
-        asyncio.create_task(_periodic_cluster_health_check())
-        logger.info("✅ Cluster health check started")
+
+        monitoring_service = get_vm_monitoring_service()
+        asyncio.create_task(
+            monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
+        )
+        logger.info("✅ Continuous VM status monitoring started (every 5 seconds)")
         
         logger.info("🎉 Backend startup complete!")
         
@@ -116,26 +125,6 @@ async def startup_event():
         logger.error(f"❌ Startup failed: {e}", exc_info=True)
         raise
 
-# ===== PERIODIC CLUSTER HEALTH CHECK =====
-async def _periodic_cluster_health_check():
-    """Periodic check: log obciążenie cluster'a"""
-    while True:
-        try:
-            await asyncio.sleep(120)  # Co 2 minuty
-            
-            lb = get_load_balancing_service()
-            nodes_load = await lb.get_all_nodes_load()
-            
-            logger.info("📊 Cluster load status:")
-            for node in nodes_load:
-                logger.info(
-                    f"  {node['node']}: "
-                    f"CPU {node['cpu_percent']:.1f}%, "
-                    f"RAM {node['memory_percent']:.1f}% - {node['status']}"
-                )
-        except Exception as e:
-            logger.error(f"Cluster health check error: {e}")
-            await asyncio.sleep(120)
 
 # ===== SHUTDOWN EVENT =====
 @app.on_event("shutdown")
