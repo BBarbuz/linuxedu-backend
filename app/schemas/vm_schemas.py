@@ -15,7 +15,7 @@ from enum import Enum
 # ============================================================================
 
 class VMStatusSchema(str, Enum):
-    """Status VM dla API"""
+    """Status VM for API"""
     CREATED = "created"
     PROVISIONING = "provisioning"
     READY = "ready"
@@ -32,7 +32,6 @@ class VMStatusSchema(str, Enum):
 class CreateVMRequest(BaseModel):
     """
     POST /api/vm/create
-    Brak parametrów — wszystko jest automatyczne.
     """
     pass
 
@@ -55,7 +54,6 @@ class RebootVMRequest(BaseModel):
 class ResetVMRequest(BaseModel):
     """
     POST /api/vm/{vm_id}/reset
-    Reset do stanu czystego (nowy VMID, stare IP).
     """
     pass
 
@@ -68,9 +66,9 @@ class DeleteVMRequest(BaseModel):
 class ExtendTimeRequest(BaseModel):
     """
     POST /api/vm/{vm_id}/extend
-    Przedłużenie czasu działania VM.
+    Extend Vm working time.
     """
-    extension_minutes: int = Field(..., ge=5, le=60, description="Minuty (5-60)")
+    extension_minutes: int = Field(..., ge=5, le=60, description="Minutes (5-60)")
 
     class Config:
         json_schema_extra = {
@@ -84,8 +82,8 @@ class ExtendTimeRequest(BaseModel):
 
 class VMResponse(BaseModel):
     """
-    Pełne dane maszyny wirtualnej.
-    Używane w GET /api/vm/{vm_id} i GET /api/vm
+    Full VM data
+    Using in GET /api/vm/{vm_id} and GET /api/vm
     """
     id: int
     user_id: int
@@ -124,7 +122,7 @@ class VMResponse(BaseModel):
 class CreateVMResponse(BaseModel):
     """
     POST /api/vm/create
-    Response z danymi nowo utworzonej VM.
+    Response with new VM data.
     """
     id: int
     proxmox_vm_id: int
@@ -165,7 +163,7 @@ class ResetVMResponse(BaseModel):
     vm_id: int
     old_proxmox_vm_id: int
     new_proxmox_vm_id: int
-    ip_address: str  # Ta sama IP co przed
+    ip_address: str
     vm_status: VMStatusSchema = VMStatusSchema.READY
     message: str = "VM reset successfully"
 
@@ -188,7 +186,7 @@ class DeleteVMResponse(BaseModel):
 class VNCUrlResponse(BaseModel):
     """
     GET /api/vm/{vm_id}/vnc-url
-    URL do noVNC konsoli.
+    URL to noVNC console.
     """
     vnc_url: str
     expires_in_seconds: int
@@ -207,12 +205,12 @@ class VNCUrlResponse(BaseModel):
 class VMStatsResponse(BaseModel):
     """
     GET /api/vm/{vm_id}/stats
-    Live statystyki VM (opcjonalnie).
+    Live statistics VM.
     """
     vm_id: int
     cpu_usage_percent: float = 0.0
-    memory_usage_mb: float = 0.0    # ← ✅ float
-    memory_total_mb: float = 0.0    # ← ✅ float
+    memory_usage_mb: float = 0.0
+    memory_total_mb: float = 0.0
     disk_usage_gb: float = 0.0
     disk_total_gb: float = 0.0
     uptime_seconds: int = 0
@@ -238,7 +236,7 @@ class VMStatsResponse(BaseModel):
 class ListVMsResponse(BaseModel):
     """
     GET /api/vm
-    Lista VM użytkownika.
+    List user VM.
     """
     vms: List[VMResponse]
     count: int
@@ -264,7 +262,7 @@ class ListVMsResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """Standardowa odpowiedź błędu"""
+    """Standard error answer"""
     detail: str
     error_code: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)

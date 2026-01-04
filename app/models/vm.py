@@ -2,13 +2,13 @@
 Virtual Machine Management Models
 =====================================
 Modele ORM dla zarządzania maszynami wirtualnymi.
-Oprte na specyfikacji: Wymagania_VMs.pdf v2.0
 """
 
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey, 
     Enum as SQLEnum, Text, UniqueConstraint
 )
+
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import INET
 from datetime import datetime
@@ -23,20 +23,20 @@ from app.database import Base
 class VMStatus(str, Enum):
     """Status maszyny wirtualnej"""
     CREATING = "creating"
-    CREATED = "created"              # Zarezerwowana w BD, przed Proxmoxem
-    PROVISIONING = "provisioning"    # Ansible setup w toku
-    READY = "ready"                  # Gotowa do użytku
-    RUNNING = "running"              # Uruchomiona (timer 12h aktywny)
-    STOPPED = "stopped"              # Zatrzymana
-    FAILED = "failed"                # Błąd provisioning
-    DELETED = "deleted"              # Oznaczona do usunięcia
+    CREATED = "created"
+    PROVISIONING = "provisioning"
+    READY = "ready"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    DELETED = "deleted"
 
 
 class IPStatus(str, Enum):
     """Status adresu IP"""
-    FREE = "free"                    # Dostępny do przydzielenia
-    ALLOCATED = "allocated"          # Przydzielony VM
-    RESERVED = "reserved"            # Zarezerwowany
+    FREE = "free"
+    ALLOCATED = "allocated"
+    RESERVED = "reserved"
 
 
 class SSHKeyType(str, Enum):
@@ -111,8 +111,8 @@ class VMMetadata(Base):
 
     # Details
     vm_name = Column(String(255), nullable=False)
-    node = Column(String(50), nullable=False, default="inz1borysmaciej")  # Proxmox node name
-    status = Column(String(20), nullable=False, default="provisioning")  # provisioning, ready, deleted
+    node = Column(String(50), nullable=False, default="inz1borysmaciej")
+    status = Column(String(20), nullable=False, default="provisioning")
     ip_address = Column(INET, nullable=True)
     template_id = Column(Integer, nullable=False, default=100)
 
@@ -136,17 +136,6 @@ class AllocatedIP(Base):
     ip_address = Column(INET, nullable=False, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     vm_id = Column(Integer, nullable=True)
-    # status = Column(
-    # SQLEnum(
-    #     IPStatus,
-    #     name="ipstatus",
-    #     values_callable=lambda enum: [e.value for e in enum],
-    # ),
-
-    # nullable=False,
-    # default=IPStatus.FREE,
-    # index=True,
-#)
     status = Column(String(20), nullable=False, default="free")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     released_at = Column(DateTime, nullable=True)
@@ -159,7 +148,7 @@ class VMIDSequence(Base):
     """
     __tablename__ = "vm_id_sequence"
 
-    # Primary Key (zawsze 1)
+    # Primary Key
     id = Column(Integer, primary_key=True, default=1)
 
     # Counter

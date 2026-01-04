@@ -20,10 +20,6 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 3600
     
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
-    REDIS_MAX_CONNECTIONS: int = 10
-    
     # JWT
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
@@ -82,7 +78,7 @@ class Settings(BaseSettings):
     
     # ===== VM MONITORING =====
     VM_NODE_CHECK_INTERVAL: int = 30
-    VM_MIGRATION_ALERT_ENABLED: bool = True
+    VM_MIGRATION_ALERT_ENABLED: bool = False
     
     # ===== ANSIBLE =====
     ANSIBLE_USER: str = "root"

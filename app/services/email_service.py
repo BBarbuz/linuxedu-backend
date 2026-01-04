@@ -47,7 +47,7 @@ class EmailService:
                         <div style="background-color: #f5f5f5; border-left: 4px solid #0066cc; padding: 15px; margin: 20px 0;">
                             <p><strong>Dane logowania:</strong></p>
                             <p><strong>Nazwa użytkownika:</strong> <code>{username}</code></p>
-                            <p><strong>Hasło początkowe:</strong> <code style="background: #e8e8e8; padding: 5px 10px; border-radius: 4px;">{password}</code></p>
+                            <p><strong>Hasło:</strong> <code style="background: #e8e8e8; padding: 5px 10px; border-radius: 4px;">{password}</code></p>
                         </div>
                         
                         <p style="color: #d9534f;"><strong>⚠️ Ważne:</strong></p>

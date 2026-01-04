@@ -7,8 +7,7 @@ logger = logging.getLogger(__name__)
 
 class LoadBalancingService:
     """
-    Prosty load balancing BEZ Redis (działa natychmiast).
-    Rozszerzysz później o Redis.
+    Prosty load balancing.
     """
     
     def __init__(self):
@@ -101,7 +100,7 @@ _load_balancing_service = None
 def init_load_balancing_service(proxmox=None):
     global _load_balancing_service
     _load_balancing_service = LoadBalancingService()
-    logger.info("✅ Load balancing service initialized (no Redis)")
+    logger.info("✅ Load balancing service initialized")
 
 def get_load_balancing_service():
     global _load_balancing_service

@@ -1,4 +1,3 @@
-# app/models/test.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SQLEnum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -20,9 +19,6 @@ class Test(Base):
     category = Column(String(50), nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
-    
-    # Relationships (później)
-    # tasks = relationship("TestTask", back_populates="test")
 
 class TestTask(Base):
     __tablename__ = "test_tasks"

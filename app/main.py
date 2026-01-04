@@ -11,9 +11,7 @@ from app.config import settings
 from app.routes import create_router
 from app.routes.vms import create_router as create_vm_router
 from app.services.load_balancing_service import init_load_balancing_service
-from app.services.proxmox_client import get_proxmox_client
-from app.services.ceph_service import init_ceph_service
-from app.services.ha_service import init_ha_service
+#from app.services.proxmox_client import get_proxmox_client
 from app.services.vm_monitoring_service import init_vm_monitoring_service, get_vm_monitoring_service
 from app.database import AsyncSessionLocal
 from proxmoxer import ProxmoxAPI
@@ -24,7 +22,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stdout,
-    force=True  # ← Ważne! Przesłania inne konfiguracje
+    force=True
 )
 
 logger = logging.getLogger(__name__)
@@ -63,15 +61,14 @@ async def health():
 # ===== STARTUP EVENT =====
 @app.on_event("startup")
 async def startup_event():
-    """Inicjuj wszystkie serwisy"""
+    """Initiate all services"""
     
     logger.info("🚀 Starting LinuxEdu Backend...")
     
     try:
         # ===== Init Proxmox API =====
         proxmox_token = settings.PROXMOX_TOKEN
-        if not proxmox_token or proxmox_token == 'YOUR-TOKEN-NAME':
-            logger.error("❌ CRITICAL: PROXMOX_TOKEN not configured in .env!")
+        if not proxmox_token:
             logger.error("   Please set PROXMOX_TOKEN=<token-id>:<token-uuid> in .env file")
             raise ValueError("PROXMOX_TOKEN not properly configured")
 
@@ -91,14 +88,9 @@ async def startup_event():
         logger.info("✅ Proxmox API connected")
         
         # ===== Init Services =====
-        init_ceph_service(proxmox)
-        logger.info("✅ Ceph service initialized")
-        
         init_load_balancing_service()
+        logger.info("✅ Load balancing service initialized")
 
-        init_ha_service(proxmox)
-        logger.info("✅ HA service initialized")
-        
         init_vm_monitoring_service(proxmox)
         logger.info("✅ VM monitoring service initialized")
         
@@ -129,5 +121,5 @@ async def startup_event():
 # ===== SHUTDOWN EVENT =====
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup na zamknięciu"""
+    """Cleanup at the end"""
     logger.info("🛑 Shutting down backend...")

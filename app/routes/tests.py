@@ -1,15 +1,14 @@
-# app/routes/tests.py - POPRAWIONY
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 from app.database import get_db
 from app.models.user import User
-from app.models.test import Test, TestTask  # Importowane modele
+from app.models.test import Test, TestTask
 from app.utils.auth import get_current_user
-from app.schemas.requests import TestResponse, TestTaskResponse  # Schematy
+from app.schemas.requests import TestResponse, TestTaskResponse
 
-router = APIRouter(prefix="/api/tests", tags=["tests"])  # ← DODANY PREFIX!
+router = APIRouter(prefix="/api/tests", tags=["tests"])
 
 @router.get("", response_model=List[TestResponse])
 async def list_tests(
@@ -41,7 +40,6 @@ async def get_test_tasks(
     db: AsyncSession = Depends(get_db)
 ):
     """Get all tasks for specific test"""
-    # Sprawdź czy test istnieje
     test_result = await db.execute(select(Test).where(Test.id == test_id))
     if not test_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail=f"Test {test_id} not found")

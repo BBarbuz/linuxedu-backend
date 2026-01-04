@@ -7,7 +7,6 @@ Endpointy dla operacji na maszynach wirtualnych.
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.database import get_db
 from app.models.user import User
 from app.utils.auth import get_current_user
@@ -31,7 +30,7 @@ router = APIRouter(prefix="/api/vms", tags=["vms"])
 
 def create_router():
     """
-    Utwórz router dla VM operacji.
+    Create router for VMs operations.
     """
     router = APIRouter(prefix="/api/vms", tags=["virtual_machines"])
 
@@ -40,36 +39,37 @@ def create_router():
     ansible_service = AnsibleService(settings)
     vm_service = VMService(proxmox_service, ansible_service)
 
-    # ========================================================================
-    # CREATE VM
-    # ========================================================================
-
     @router.post(
         "/create",
         response_model=CreateVMResponse,
         status_code=status.HTTP_201_CREATED,
-        summary="Utwórz nową maszynę wirtualną",
+        summary="Create a new virtual machine",
         description="""
-        Tworzy nową VM dla zalogowanego użytkownika.
+        Creates a new VM for the logged-in user.
 
         **Pipeline:**
-        1. Walidacja: czy user już ma VM
-        2. Alokacja: VMID + IP z puli
-        3. Rezerwacja w BD
-        4. Clone template w Proxmoxie
-        5. Konfiguracja IP, SSH, cloud-init
-        6. Start VM
+        1. Validation: check if the user already has a VM
+        2. Allocation: assign VMID + IP from the pool
+        3. Database reservation
+        4. Clone the template in Proxmox
+        5. Configure IP, SSH, cloud-init
+        6. Start the VM
         7. Ansible provisioning
 
-        **Czas:** ~3-5 minut
+        **Duration:** ~3-5 minutes
         """
     )
+
+    # ========================================================================
+    # CREATE VM
+    # ========================================================================
+
     async def create_vm(
         _: CreateVMRequest = None,
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        """Utwórz nową VM dla użytkownika."""
+        """Create new VM for user"""
         try:
             vm = await vm_service.create_vm(db=db, user_id=current_user.id)
             if vm is None:
@@ -94,7 +94,6 @@ def create_router():
                 detail=f"Failed to create VM: {str(e)}",
             )
 
-
     # ========================================================================
     # LIST VMs
     # ========================================================================
@@ -102,14 +101,14 @@ def create_router():
     @router.get(
         "",
         response_model=ListVMsResponse,
-        summary="Pobierz listę VM użytkownika",
-        description="Zwraca wszystkie nieusunięte VM przypisane do zalogowanego użytkownika."
+        summary="Get user's VM list",
+        description="Returns all non-deleted VMs assigned to the logged-in user."
     )
     async def list_vms(
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Pobierz listę VM użytkownika."""
+        """Get user's VM list"""
         try:
             vms = await vm_service.list_user_vms(db, current_user.id)
             
@@ -144,7 +143,7 @@ def create_router():
     @router.get(
     "/{vm_id}",
     response_model=VMResponse,
-    summary="Szczegóły VM",
+    summary="Deatailed VM",
     )
     async def get_vm(
         vm_id: int,
@@ -152,7 +151,7 @@ def create_router():
         db: AsyncSession = Depends(get_db),
     ):
         try:
-            vm = await vm_service.get_user_vm(vm_id, current_user.id, db)  # ✅ taka kolejność
+            vm = await vm_service.get_user_vm(vm_id, current_user.id, db)
             return VMResponse(
                 id=vm.id,
                 user_id=vm.user_id,
@@ -174,25 +173,25 @@ def create_router():
     @router.get(
     "/{vm_id}/stats",
     response_model=VMStatsResponse,
-    summary="Statystyki VM",
-    description="Pobierz live statystyki VM (CPU, RAM, dysk, sieć)"
+    summary="VM statistics",
+    description="Fetch live VM statistics (CPU, RAM, disk, network)."
     )
     async def get_vm_stats(
         vm_id: int = Path(..., ge=1),
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        """Pobierz statystyki VM"""
+        """Get VM statistics"""
         try:
-            # Pobierz VM z bazy
+            # Get VM z bazy
             vm = await vm_service.get_user_vm(vm_id, current_user.id, db)
             if not vm:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="VM nie znaleziona"
+                    detail="VM not found"
                 )
             
-            # Pobierz statystyki z Proxmoxa
+            # Get statistics z Proxmoxa
             stats = await vm_service.get_vm_stats(vm.proxmox_vm_id, vm.node)
             
             return VMStatsResponse(
@@ -212,9 +211,8 @@ def create_router():
             logger.error(f"Error getting VM {vm_id} stats: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Nie udało się pobrać statystyk VM"
+                detail="Failed to fetch VM statistics"
             )
-
 
     # ========================================================================
     # START VM
@@ -223,14 +221,14 @@ def create_router():
     @router.post(
         "/{vm_id}/start",
         response_model=StartVMResponse,
-        summary="Uruchom VM",
+        summary="Start VM",
         description="""
-        Uruchomienie VM i ustawienie timera 12 godzin.
-        
-        Po uruchomieniu:
-        - Status zmienia się na RUNNING
-        - runtime_expires_at = teraz + 12h
-        - VM zatrzyma się automatycznie po 12h
+        Starts the VM and sets a 12-hour timer.
+
+        After starting:
+        - Status changes to RUNNING
+        - runtime_expires_at = now + 12h
+        - VM will stop automatically after 12 hours
         """
     )
     async def start_vm(
@@ -239,9 +237,8 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Uruchom VM."""
+        """Start VM."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id
             vm = await vm_service.start_vm(vm_id, current_user.id, db)
 
             return StartVMResponse(
@@ -267,7 +264,7 @@ def create_router():
     @router.post(
         "/{vm_id}/stop",
         response_model=StopVMResponse,
-        summary="Zatrzymaj VM",
+        summary="Stop VM",
         description="Graceful shutdown VM."
     )
     async def stop_vm(
@@ -276,9 +273,8 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Zatrzymaj VM."""
+        """Stop VM."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id
             vm = await vm_service.stop_vm(vm_id, current_user.id, db)
 
             return StopVMResponse(
@@ -303,10 +299,10 @@ def create_router():
     @router.post(
         "/{vm_id}/reboot",
         response_model=RebootVMResponse,
-        summary="Restartuj VM",
+        summary="Reboot VM",
         description="""
-        Graceful reboot VM (nie resetuje timera 12h).
-        Czas: ~30-60 sekund
+        Graceful VM reboot (does not reset the 12h timer).
+        Duration: ~30-60 seconds
         """
     )
     async def reboot_vm(
@@ -315,9 +311,8 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Restartuj VM."""
+        """Reboot VM."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id
             vm = await vm_service.reboot_vm(vm_id, current_user.id, db)
 
             return RebootVMResponse(
@@ -343,17 +338,17 @@ def create_router():
     @router.post(
         "/{vm_id}/reset",
         response_model=ResetVMResponse,
-        summary="Resetuj VM",
+        summary="Reset VM",
         description="""
-        Reset VM do stanu czystego.
-        
-        Co się dzieje:
-        - Nowy VMID w Proxmoxie
-        - Stary adres IP (zwolniony przy resecie)
-        - Wszystkie zmiany użytkownika są usuwane
-        - Timer 12h resetuje się
-        
-        Czas: ~3-5 minut
+        Reset VM to clean state.
+
+        What happens:
+        - New VMID in Proxmox
+        - Same IP address (released during reset)
+        - All user changes are removed
+        - 12h timer resets
+
+        Duration: ~3-5 minutes
         """
     )
     async def reset_vm(
@@ -362,14 +357,13 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Resetuj VM."""
+        """Reset VM."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id, settings na końcu
             vm = await vm_service.reset_vm(vm_id, current_user.id, db, settings)
 
             return ResetVMResponse(
                 vm_id=vm.id,
-                old_proxmox_vm_id=vm.proxmox_vm_id - 1,  # Approximate
+                old_proxmox_vm_id=vm.proxmox_vm_id - 1,
                 new_proxmox_vm_id=vm.proxmox_vm_id,
                 ip_address=vm.ip_address,
                 vm_status=vm.vm_status.value,
@@ -392,14 +386,14 @@ def create_router():
     @router.post(
         "/{vm_id}/extend",
         response_model=ExtendTimeResponse,
-        summary="Przedłuż czas działania VM",
+        summary="Extend VM runtime",
         description="""
-        Przedłużenie czasu działania VM.
-        
-        Warunki:
-        - extension_minutes: 5-60 minut
-        - Max limit: 12 godzin od teraz
-        - Max 3 extensiony na sesję 12h
+        Extends the VM runtime.
+
+        Conditions:
+        - extension_minutes: 5-60 minutes
+        - Max limit: 12 hours from now
+        - Max 3 extensions per 12h session
         """
     )
     async def extend_time(
@@ -408,9 +402,8 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Przedłuż czas działania VM."""
+        """Extends the VM runtime."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id, request na końcu
             vm = await vm_service.extend_time(
                 db,
                 vm_id,
@@ -441,15 +434,15 @@ def create_router():
     @router.delete(
         "/{vm_id}",
         response_model=DeleteVMResponse,
-        summary="Usuń VM",
+        summary="Delete VM",
         description="""
-        Usunięcie VM i zwolnienie wszystkich zasobów.
-        
-        Operacja:
-        - Graceful shutdown w Proxmoxie
-        - Usunięcie dysku i konfiguracji z Proxmoxa
-        - Zwolnienie adresu IP
-        - Oznaczenie w BD jako DELETED
+        Deletes the VM and releases all resources.
+
+        Operation:
+        - Graceful shutdown in Proxmox
+        - Removal of disk and configuration from Proxmox
+        - IP address release
+        - Marked as DELETED in the database
         """
     )
     async def delete_vm(
@@ -457,9 +450,8 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Usuń VM."""
+        """Delete VM."""
         try:
-            # ✅ POPRAWKA: db PRZED userid i vm_id, settings na końcu
             vm = await vm_service.delete_vm(vm_id, current_user.id, db)
 
             return DeleteVMResponse(
@@ -484,18 +476,17 @@ def create_router():
     @router.get(
         "/{vmid}/vnc-url",
         response_model=VNCUrlResponse,
-        summary="Pobierz URL do noVNC konsoli",
+        summary="Get URL to noVNC console",
         tags=["virtual_machines"],
-        description="Generuje tymczasowy token dla dostępu do noVNC konsoli VM.\n\nToken ważny przez 30 minut.",
+        description="Generates a temporary token for noVNC console access to the VM.\n\nToken valid for 120 minutes.",
     )
     async def get_vnc_url(
         vmid: int,
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ):
-        """Pobierz URL do noVNC konsoli."""
+        """Get URL to noVNC console"""
         try:
-            # ✅ PRAWIDŁOWA KOLEJNOŚĆ: vmid, userid, db
             vncurl = await vm_service.get_vnc_url(vmid, current_user.id, db)
             
             if not vncurl:
@@ -506,7 +497,7 @@ def create_router():
             
             return VNCUrlResponse(
                 vnc_url=vncurl,
-                expires_in_seconds=10000,  # ✅ NAZWA DOKŁADNIE TAK JAK W SCHEMACIE
+                expires_in_seconds=7200,
                 vm_id=vmid,
                     )
 

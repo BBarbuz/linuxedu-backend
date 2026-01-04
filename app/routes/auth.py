@@ -1,4 +1,3 @@
-# app/routes/auth.py - WORKING VERSION
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,18 +10,18 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # Pobierz użytkownika z bazy
+    # Take user from database
     result = await db.execute(select(User).where(User.username == request.username))
     user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # Sprawdź hasło PBKDF2
+    # Check passwords PBKDF2
     if not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # Generuj JWT
+    # Generate JWT
     access = create_access_token({"sub": str(user.id)})
     refresh = create_refresh_token({"sub": str(user.id)})
 
@@ -35,9 +34,8 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
     
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(request: RefreshRequest, db: AsyncSession = Depends(get_db)):
-    """Odśwież access token używając refresh token"""
-    
-    # Sprawdź refresh token
+        
+    # Check refresh token
     payload = verify_token(request.refresh_token)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
@@ -46,14 +44,14 @@ async def refresh(request: RefreshRequest, db: AsyncSession = Depends(get_db)):
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    # Pobierz użytkownika z bazy
+    # Take user from database
     user = await db.get(User, int(user_id))
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User inactive")
     
-    # NOWE tokeny
+    # Tokens
     access = create_access_token({"sub": str(user.id), "role": user.role})
-    refresh = create_refresh_token({"sub": str(user.id)})  # Nowy refresh!
+    refresh = create_refresh_token({"sub": str(user.id)})
     
     print(f"✅ REFRESH: {user.username} (ID={user.id})")
     return TokenResponse(

@@ -155,62 +155,62 @@ class VMMonitoringService:
 
 
     
-    async def _send_migration_alert(
-        self,
-        vm_record_id: int,
-        user_id: int,
-        old_node: str,
-        new_node: str
-    ):
-        """Wyślij alert o migracji VM"""
-        logger.info(
-            f"Alert: VM migrated - user={user_id}, "
-            f"{old_node} → {new_node}"
-        )
-        # TODO: Implementuj wysłanie notyfikacji (email, websocket, itp)
-        # np. send_user_notification(user_id, "VM foi migrada")
+    # async def _send_migration_alert(
+    #     self,
+    #     vm_record_id: int,
+    #     user_id: int,
+    #     old_node: str,
+    #     new_node: str
+    # ):
+    #     """Wyślij alert o migracji VM"""
+    #     logger.info(
+    #         f"Alert: VM migrated - user={user_id}, "
+    #         f"{old_node} → {new_node}"
+    #     )
+    #     # TODO: Implementuj wysłanie notyfikacji (email, websocket, itp)
+    #     # np. send_user_notification(user_id, "VM foi migrada")
     
-    async def get_node_status(self, node: str) -> dict:
-        """Pobierz status noda"""
-        try:
-            node_status = self.proxmox.nodes(node).status.get()
+    # async def get_node_status(self, node: str) -> dict:
+    #     """Pobierz status noda"""
+    #     try:
+    #         node_status = self.proxmox.nodes(node).status.get()
             
-            return {
-                "node": node,
-                "status": node_status.get('status'),
-                "uptime": node_status.get('uptime', 0),
-                "cpu_usage": node_status.get('cpu', 0),
-                "memory_usage": node_status.get('memory', 0),
-                "memory_max": node_status.get('maxmemory', 0),
-            }
-        except Exception as e:
-            logger.error(f"Error getting node status: {e}")
-            raise
+    #         return {
+    #             "node": node,
+    #             "status": node_status.get('status'),
+    #             "uptime": node_status.get('uptime', 0),
+    #             "cpu_usage": node_status.get('cpu', 0),
+    #             "memory_usage": node_status.get('memory', 0),
+    #             "memory_max": node_status.get('maxmemory', 0),
+    #         }
+    #     except Exception as e:
+    #         logger.error(f"Error getting node status: {e}")
+    #         raise
     
-    async def get_cluster_status(self) -> dict:
-        """Pobierz status całego clustera"""
-        try:
-            nodes_status = []
-            for node in settings.PROXMOX_NODES:
-                try:
-                    status = await self.get_node_status(node)
-                    nodes_status.append(status)
-                except:
-                    nodes_status.append({
-                        "node": node,
-                        "status": "offline",
-                        "memory_usage": 0,
-                        "cpu_usage": 0
-                    })
+    # async def get_cluster_status(self) -> dict:
+    #     """Pobierz status całego clustera"""
+    #     try:
+    #         nodes_status = []
+    #         for node in settings.PROXMOX_NODES:
+    #             try:
+    #                 status = await self.get_node_status(node)
+    #                 nodes_status.append(status)
+    #             except:
+    #                 nodes_status.append({
+    #                     "node": node,
+    #                     "status": "offline",
+    #                     "memory_usage": 0,
+    #                     "cpu_usage": 0
+    #                 })
             
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "nodes": nodes_status,
-                "healthy": all(n.get('status') == 'online' for n in nodes_status)
-            }
-        except Exception as e:
-            logger.error(f"Error getting cluster status: {e}")
-            raise
+    #         return {
+    #             "timestamp": datetime.now().isoformat(),
+    #             "nodes": nodes_status,
+    #             "healthy": all(n.get('status') == 'online' for n in nodes_status)
+    #         }
+    #     except Exception as e:
+    #         logger.error(f"Error getting cluster status: {e}")
+    #         raise
 
 
     async def monitor_vm_status_continuous(self, db: AsyncSession):
