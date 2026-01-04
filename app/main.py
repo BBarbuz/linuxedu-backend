@@ -28,6 +28,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 
 app = FastAPI(
     title="LinuxEdu Backend",
@@ -92,6 +94,8 @@ async def startup_event():
         init_ceph_service(proxmox)
         logger.info("✅ Ceph service initialized")
         
+        init_load_balancing_service()
+
         init_ha_service(proxmox)
         logger.info("✅ HA service initialized")
         
@@ -108,10 +112,10 @@ async def startup_event():
             )
         )
 
-        # monitoring_service = get_vm_monitoring_service()
-        # asyncio.create_task(
-        #     monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
-        # )
+        monitoring_service = get_vm_monitoring_service()
+        asyncio.create_task(
+            monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
+        )
         logger.info("✅ Continuous VM status monitoring started (every 5 seconds)")
         logger.info("✅ VM monitoring started")
         

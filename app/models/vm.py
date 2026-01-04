@@ -129,28 +129,6 @@ class VMMetadata(Base):
         return f"<VMMetadata(vm_id={self.vm_id}, node={self.node}, status={self.status})>"
 
 
-# class AllocatedIP(Base):
-#     """
-#     Tabela: allocated_ips
-#     Zarządzanie pulą adresów IP dla VM.
-#     """
-#     __tablename__ = "allocated_ips"
-
-#     # Primary Key
-#     id = Column(Integer, primary_key=True, index=True)
-
-#     # Details
-#     ip_address = Column(INET, nullable=False, unique=True, index=True)
-#     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-#     vm_id = Column(Integer, nullable=True)
-#     status = Column(SQLEnum(IPStatus), nullable=False, default=IPStatus.FREE, index=True)
-
-#     # Timestamps
-#     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-#     released_at = Column(DateTime, nullable=True)
-
-#     def __repr__(self):
-#         return f"<AllocatedIP(ip={self.ip_address}, status={self.status})>"
 class AllocatedIP(Base):
     __tablename__ = "allocated_ips"
 
@@ -158,17 +136,18 @@ class AllocatedIP(Base):
     ip_address = Column(INET, nullable=False, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     vm_id = Column(Integer, nullable=True)
-    status = Column(
-    SQLEnum(
-        IPStatus,
-        name="ipstatus",
-        values_callable=lambda enum: [e.value for e in enum],
-    ),
-    nullable=False,
-    default=IPStatus.FREE,
-    index=True,
-)
+    # status = Column(
+    # SQLEnum(
+    #     IPStatus,
+    #     name="ipstatus",
+    #     values_callable=lambda enum: [e.value for e in enum],
+    # ),
 
+    # nullable=False,
+    # default=IPStatus.FREE,
+    # index=True,
+#)
+    status = Column(String(20), nullable=False, default="free")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     released_at = Column(DateTime, nullable=True)
 

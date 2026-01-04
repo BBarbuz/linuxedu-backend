@@ -223,9 +223,10 @@ class VMMonitoringService:
         while True:
             try:
                 # 1. POBIERZ wszystkie VM z bazy (nie deleted)
+                db.expire_all()
                 result = await db.execute(
                     select(VM).where(
-                        VM.vm_status.in_([VMStatus.RUNNING, VMStatus.STOPPED, VMStatus.CREATED, VMStatus.READY])
+                        VM.vm_status.in_([VMStatus.RUNNING, VMStatus.STOPPED, VMStatus.CREATED, VMStatus.READY, VMStatus.CREATING])
                     )
                 )
                 vms = result.scalars().all()
@@ -233,8 +234,8 @@ class VMMonitoringService:
                 for vm in vms:
                     try:
                         # 2. SPRAWDZAJ status na Proxmoxie (z funkcji już istniejącej)
-                        proxmox_status = await self.proxmox_service.get_vm_status(vm.proxmox_vm_id)
-                        
+                        proxmox_status = await self.proxmox_service.get_vm_status(vm.proxmox_vm_id, node=vm.node)
+                        is_locked = await self.proxmox_service.is_vm_locked(vm.proxmox_vm_id, node=vm.node)
                         # 3. PORÓWNAJ z bazą
                         if vm.vm_status.value != proxmox_status:
                             old_status = vm.vm_status.value
@@ -242,8 +243,9 @@ class VMMonitoringService:
                             # 4. UPDATE BAZA
                             if proxmox_status == "running":
                                 vm.vm_status = VMStatus.RUNNING
-                            elif proxmox_status == "stopped":
+                            elif proxmox_status == "stopped" and not is_locked:
                                 vm.vm_status = VMStatus.STOPPED
+                             
                             await db.commit()
                             
                             logger.warning(

@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     ANSIBLE_VERBOSITY: int = 0
     ANSIBLE_EXECUTION_TIMEOUT_SECONDS: int = 600
     
+    # ===== EMAIL =====
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 465
+    SMTP_USERNAME: str
+    SMTP_PASSWORD: str
+    SMTP_FROM_EMAIL: str
+    SMTP_FROM_NAME: str = "LinuxEdu"
+
     # CORS
     ALLOWED_ORIGINS: List[str] = ["https://192.168.0.129:3000", "http://localhost:3000"]
 

@@ -144,7 +144,7 @@ class ProxmoxService:
         path = f"/nodes/{self.node}/qemu/{vmid}/config"
 
         data = {
-            "ipconfig0": f"ip={ip_address}/24,gw=192.168.100.1",
+            "ipconfig0": f"ip={ip_address}/24,gw=192.168.0.1",
             "ciuser": "root",
             "nameserver": "8.8.8.8 8.8.4.4",
             "agent": "enabled=1"
@@ -236,12 +236,12 @@ class ProxmoxService:
         logger.error(f"VM {vmid} did not reach 'stopped' state within {max_wait}s")
         return False
 
-    async def reboot_vm(self, vmid: int, max_wait: int = 120) -> bool:
+    async def reboot_vm(self, vmid: int, target_node: str, max_wait: int = 120) -> bool:
         """
         Graceful reboot VM i poczekaj aż wróci do 'running'.
         max_wait – maksymalny czas w sekundach na restart VM.
         """
-        path = f"/nodes/{self.node}/qemu/{vmid}/status/reboot"
+        path = f"/nodes/{target_node}/qemu/{vmid}/status/reboot"
 
         # 1. Wyślij żądanie reboot – może zwrócić UPID
         result = await self._proxmox_request("POST", path, {})
@@ -257,7 +257,7 @@ class ProxmoxService:
 
         # 2. Sprawdzaj status VM: najpierw stopped, potem running
         for _ in range(max_wait):
-            status = await self.get_vm_status(vmid)
+            status = await self.get_vm_status(vmid, target_node)
             
             if status == "running":
                 logger.info(f"✅ VM {vmid} rebooted and running")
@@ -271,9 +271,13 @@ class ProxmoxService:
         return False
 
 
-    async def destroy_vm(self, vmid: int, purge: bool = True) -> bool:
+    async def destroy_vm(self, vmid: int, target_node: str, purge: bool = True) -> bool:
+        status_before = await self.get_vm_status(vmid, node=target_node)
+        if status_before == "running":
+            raise RuntimeError(f"Cannot destroy running VM {vmid} on {target_node}")
+        
         """Destroy VM (remove config + disks)."""
-        path = f"/nodes/{self.node}/qemu/{vmid}"
+        path = f"/nodes/{target_node}/qemu/{vmid}"
         params = {"purge": 1} if purge else {}
 
         # First shutdown
@@ -303,6 +307,18 @@ class ProxmoxService:
         logger.debug(f"VM {vmid} status on {target_node}: {status_str}")
         return status_str
 
+    async def is_vm_locked(self, vmid: int, node: str) -> bool:
+        config = await self._proxmox_request(
+            "GET",
+            f"/nodes/{node}/qemu/{vmid}/config",
+        )
+        lock = config.get("lock")
+        if lock:
+            logger.warning(f"VM {vmid} on {node} is locked: {lock}")
+            return True
+        return False
+
+
 
     async def poll_vm_ready(self, vmid: int, max_attempts: int = 30, interval: int = 1) -> bool:
         """
@@ -318,7 +334,7 @@ class ProxmoxService:
         """
         for attempt in range(max_attempts):
             try:
-                status = await self.get_vm_status(vmid)
+                status = await self.get_vm_status(vmid, vm.node)
                 if status == "running":
                     logger.info(f"VM {vmid} is ready after {attempt} attempts")
                     return True
@@ -729,7 +745,7 @@ class VMService:
             )
 
         # 1. Reboot w Proxmoxie + oczekiwanie na 'running'
-        ok = await self.proxmox.reboot_vm(vm.proxmox_vm_id)
+        ok = await self.proxmox.reboot_vm(vm.proxmox_vm_id, vm.node)
         if not ok:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -827,7 +843,7 @@ class VMService:
 
         # Proxmox destroy (też czyści RBD)
         try:
-            await self.proxmox.destroy_vm(vm.proxmox_vm_id)
+            await self.proxmox.destroy_vm(vm.proxmox_vm_id, vm.node)
         except Exception as e:
             logger.warning(f"⚠️  Proxmox destroy failed (may be OK): {e}")
 

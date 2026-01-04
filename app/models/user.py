@@ -24,4 +24,4 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # RELACJA - DODANE!
-    vms = relationship("VM", back_populates="user")
+    vms = relationship("VM", back_populates="user", passive_deletes=True)
