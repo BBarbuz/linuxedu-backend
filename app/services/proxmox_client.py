@@ -74,7 +74,7 @@ class ProxmoxClient:
     
     def get_all_nodes_status(self) -> List[Dict[str, Any]]:
         """Pobierz status wszystkich węzłów"""
-        nodes = getattr(settings, 'PROXMOX_NODES', ['pve', 'pve2', 'pve3'])
+        nodes = settings.PROXMOX_NODES
         statuses = []
         
         for node in nodes:
@@ -89,6 +89,7 @@ class ProxmoxClient:
                     "maxmemory": status.get("maxmemory", 0),
                     "uptime": status.get("uptime", 0),
                 })
+                logger.info(f"I am here {status.get("cpu", 0)}")
             except Exception as e:
                 logger.error(f"❌ Could not get status for node {node}: {e}")
                 statuses.append({

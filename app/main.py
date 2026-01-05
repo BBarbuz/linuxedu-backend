@@ -27,7 +27,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
-
+logging.getLogger("app").setLevel(logging.DEBUG) 
 
 app = FastAPI(
     title="LinuxEdu Backend",

@@ -20,6 +20,7 @@ from app.models.vm import VM, VMStatus, VMMetadata, AllocatedIP, IPStatus, VMIDS
 from app.models.user import User
 from app.config import settings
 from app.services.proxmox_client import get_proxmox_client
+from app.services.load_balancing_service import get_load_balancing_service
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,77 @@ class ProxmoxService:
             return True
         return False
 
+    async def migrate_vm(
+        self, 
+        vmid: int, 
+        current_node: str, 
+        target_node: str,
+        max_wait: int = 600,
+        online: int = 1
+    ) -> bool:
+        """Migruj VM, czekaj na UPID"""
+        if current_node == target_node:
+            logger.info(f"VM {vmid}: source == target, skipping migration")
+            return True
+        
+        logger.info(f"🔄 Starting migration VM {vmid}: {current_node} → {target_node}")
+        
+        path = f"/nodes/{current_node}/qemu/{vmid}/migrate"
+        data = {"target": target_node, "online": online}
+        
+        try:
+            result = await self._proxmox_request("POST", path, data)
+            
+            # Wyciągnij UPID (może być str lub dict)
+            upid = None
+            if isinstance(result, str):
+                upid = result
+            elif isinstance(result, dict):
+                upid = result.get("upid") or result.get("data")
+            
+            if not upid:
+                logger.error(f"❌ No UPID for migration VM {vmid}")
+                return False
+            
+            logger.info(f"📋 Migration UPID: {upid}")
+            
+            # Polling z timeout
+            for i in range(max_wait):
+                try:
+                    status = await self._proxmox_request(
+                        "GET", 
+                        f"/nodes/{current_node}/tasks/{upid}/status"
+                    )
+                    
+                    task_status = status.get("status")
+                    exit_status = status.get("exitstatus")
+                    
+                    # Log postępu co 30s
+                    if i > 0 and i % 30 == 0:
+                        logger.info(f"Migration in progress... {i}/{max_wait}s")
+                    
+                    if task_status == "stopped":
+                        if exit_status == "OK":
+                            logger.info(f"✅ Migration completed (UPID: {upid})")
+                            return True
+                        else:
+                            logger.error(f"❌ Migration failed: {exit_status}")
+                            return False
+                    
+                    await asyncio.sleep(1)
+                    
+                except Exception as e:
+                    logger.debug(f"Poll attempt {i+1}/{max_wait}: {e}")
+                    await asyncio.sleep(1)
+            
+            logger.error(f"❌ Migration timeout after {max_wait}s")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Migration request failed: {e}", exc_info=True)
+            return False
+
+
 
 
     async def poll_vm_ready(self, vmid: int, max_attempts: int = 30, interval: int = 1) -> bool:
@@ -346,7 +418,7 @@ class ProxmoxService:
         logger.error(f"❌ VM {vmid} did not become ready after {max_attempts} attempts")
         return False
 
-    async def get_vnc_url(self, vmid: int, expiry_seconds: int = 1800) -> str:
+    async def get_vnc_url(self, vmid: int, target_node: str, expiry_seconds: int = 1800) -> str:
         """
         Get VNC URL w formacie Proxmox noVNC
         """
@@ -355,7 +427,7 @@ class ProxmoxService:
                 f"https://{settings.PROXMOX_HOST}:8006/?"
                 f"console=kvm&"
                 f"novnc=1&"
-                f"node={self.node}&"
+                f"node={target_node}&"
                 f"vmid={vmid}&"
                 f"vmname=user-vm-{vmid}&"
                 f"resize=off"
@@ -684,34 +756,75 @@ class VMService:
     # OPERACJE NA VM
     # ========================================================================
 
+    # async def start_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
+    #     """Start VM + ustaw timer 12h, z potwierdzeniem że VM faktycznie ruszyła."""
+    #     vm = await self._get_user_vm(vm_id, user_id, db)
+
+    #     if vm.vm_status == VMStatus.RUNNING:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_400_BAD_REQUEST,
+    #             detail="VM is already running"
+    #         )
+
+    #     # 1. Start w Proxmoxie + oczekiwanie na 'running'
+    #     ok = await self.proxmox.start_vm(vm.proxmox_vm_id, vm.node)
+    #     if not ok:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_502_BAD_GATEWAY,
+    #             detail="Failed to start VM in Proxmox"
+    #         )
+
+    #     # 2. Aktualizacja BD – dopiero PO potwierdzeniu running
+    #     vm.vm_status = VMStatus.RUNNING
+    #     vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=12)
+    #     vm.last_active_at = datetime.utcnow()
+
+    #     await db.commit()
+    #     await db.refresh(vm)
+
+    #     logger.info(f"✅ VM started: {vm.proxmox_vm_id}")
+    #     return vm
+
     async def start_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Start VM + ustaw timer 12h, z potwierdzeniem że VM faktycznie ruszyła."""
         vm = await self._get_user_vm(vm_id, user_id, db)
-
+        
         if vm.vm_status == VMStatus.RUNNING:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="VM is already running"
+            raise HTTPException(status_code=400, detail="Already running")
+        
+        # 1. Best node
+        target_node = vm.node
+        try:
+            best_node = await asyncio.to_thread(
+                get_load_balancing_service().get_best_node
             )
-
-        # 1. Start w Proxmoxie + oczekiwanie na 'running'
-        ok = await self.proxmox.start_vm(vm.proxmox_vm_id, vm.node)
+            target_node = best_node
+        except Exception as e:
+            logger.warning(f"Load balancing error: {e}")
+        
+        # 2. Migracja jeśli potrzeba
+        if target_node != vm.node:
+            logger.info(f"Migrating {vm.proxmox_vm_id}: {vm.node} → {target_node}")
+            if await self.proxmox.migrate_vm(vm.proxmox_vm_id, vm.node, target_node):
+                vm.node = target_node
+                await db.commit()
+                logger.info("Migration OK, DB updated")
+            else:
+                logger.warning("Migration failed, fallback")
+                target_node = vm.node
+        
+        # 3. Start
+        ok = await self.proxmox.start_vm(vm.proxmox_vm_id, target_node)
         if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to start VM in Proxmox"
-            )
-
-        # 2. Aktualizacja BD – dopiero PO potwierdzeniu running
+            raise HTTPException(status_code=502, detail="Start failed")
+        
+        # 4. Finalizuj
         vm.vm_status = VMStatus.RUNNING
         vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=12)
         vm.last_active_at = datetime.utcnow()
-
         await db.commit()
-        await db.refresh(vm)
-
-        logger.info(f"✅ VM started: {vm.proxmox_vm_id}")
+        
         return vm
+
 
     async def stop_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
         """Stop VM z potwierdzeniem z Proxmoxa."""
@@ -933,7 +1046,7 @@ class VMService:
                 detail="VM is not running"
             )
 
-        vnc_url = await self.proxmox.get_vnc_url(vm.proxmox_vm_id, expiry_seconds=1800)
+        vnc_url = await self.proxmox.get_vnc_url(vm.proxmox_vm_id, vm.node, expiry_seconds=1800)
         return vnc_url
 
     # ========================================================================
