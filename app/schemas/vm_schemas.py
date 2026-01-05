@@ -71,13 +71,13 @@ class ExtendTimeRequest(BaseModel):
     extension_minutes: int = Field(
         ..., 
         ge=5, 
-        le=240,  # ✅ Zmień z 60 na 240
-        description="Minutes (5-240)"  # ✅ Zaktualizuj opis
+        le=240,
+        description="Minutes (5-240)"
     )
 
     class Config:
         json_schema_extra = {
-            "example": {"extension_minutes": 120}  # ✅ Przykład 2h
+            "example": {"extension_minutes": 120}
         }
 
 

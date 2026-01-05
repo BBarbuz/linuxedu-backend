@@ -686,7 +686,7 @@ class VMService:
                 vm_name=f"user-vm-{user_id}-{int(time.time())}",
                 vm_status=VMStatus.CREATING,
                 ip_address=str(allocated_ip.ip_address),
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(),
                 node=settings.PROXMOX_PRIMARY_NODE,
             )
             db.add(vm)
@@ -734,10 +734,10 @@ class VMService:
 
             # 8. Finalizacja
             vm.vm_status = VMStatus.READY
-            vm.runtime_expires_at = datetime.utcnow() + timedelta(
+            vm.runtime_expires_at = datetime.now() + timedelta(
                 seconds=settings.VM_DEFAULT_TIMEOUT_SECONDS
             )
-            vm.last_active_at = datetime.utcnow()
+            vm.last_active_at = datetime.now()
             await db.commit()
             await db.refresh(vm)
 
@@ -790,8 +790,8 @@ class VMService:
         
         # 4. Finalizuj
         vm.vm_status = VMStatus.RUNNING
-        vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=4)
-        vm.last_active_at = datetime.utcnow()
+        vm.runtime_expires_at = datetime.now() + timedelta(hours=4)
+        vm.last_active_at = datetime.now()
         await db.commit()
         
         return vm
@@ -810,7 +810,7 @@ class VMService:
 
         vm.vm_status = VMStatus.STOPPED
         vm.runtime_expires_at = None
-        vm.last_active_at = datetime.utcnow()
+        vm.last_active_at = datetime.now()
 
         await db.commit()
         await db.refresh(vm)
@@ -837,7 +837,7 @@ class VMService:
             )
 
         # 2. Aktualizacja DB – dopiero PO potwierdzeniu running
-        vm.last_active_at = datetime.utcnow()
+        vm.last_active_at = datetime.now()
 
         await db.commit()
         await db.refresh(vm)
@@ -892,23 +892,11 @@ class VMService:
                 detail=f"Reset error: {str(e)}"
             )
 
-        # Ansible provisioning
-        try:
-            success = await self.ansible.run_setup_vm(old_ip, hostname)
-            if not success:
-                raise RuntimeError("Ansible provisioning failed")
-        except Exception as e:
-            logger.error(f"❌ Reset ansible failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Provisioning error"
-            )
-
         # Update DB
         old_vm.proxmox_vm_id = new_vm_id
         old_vm.vm_status = VMStatus.READY
         old_vm.runtime_expires_at = None
-        old_vm.last_active_at = datetime.utcnow()
+        old_vm.last_active_at = datetime.now()
 
         await db.commit()
         await db.refresh(old_vm)
@@ -948,51 +936,6 @@ class VMService:
         logger.info(f"✅ VM deleted: {vm.proxmox_vm_id}")
         return vm
 
-    # async def extend_time(
-    #     self,
-    #     vm_id: int,
-    #     user_id: int,
-    #     extension_minutes: int,
-    #     db: AsyncSession
-    # ) -> VM:
-    #     """
-    #     Przedłuż czas działania VM.
-    #     - extension_minutes: 5-60
-    #     - max total: 12h od teraz
-    #     """
-    #     if extension_minutes < 5 or extension_minutes > 60:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_400_BAD_REQUEST,
-    #             detail="Extension must be between 5 and 60 minutes"
-    #         )
-
-    #     vm = await self._get_user_vm(vm_id, user_id, db)
-
-    #     if vm.vm_status != VMStatus.RUNNING:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_400_BAD_REQUEST,
-    #             detail="VM is not running"
-    #         )
-
-    #     # Max limit: 12 hours from now
-    #     max_runtime = datetime.utcnow() + timedelta(hours=12)
-    #     new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
-
-    #     if new_expiry > max_runtime:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_400_BAD_REQUEST,
-    #             detail="Cannot extend beyond 12 hours limit"
-    #         )
-
-    #     vm.runtime_expires_at = new_expiry
-    #     vm.last_active_at = datetime.utcnow()
-
-    #     await db.commit()
-    #     await db.refresh(vm)
-
-    #     logger.info(f"✅ VM extended: {vm.proxmox_vm_id}, new expiry: {new_expiry}")
-    #     return vm
-
     async def extend_time(
         self,
         vm_id: int,
@@ -1026,7 +969,7 @@ class VMService:
             )
         
         # ✅ Max limit: 8 godzin od teraz (zamiast 12h)
-        max_runtime = datetime.utcnow() + timedelta(hours=8)
+        max_runtime = datetime.now() + timedelta(hours=8)
         new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
         
         if new_expiry > max_runtime:
@@ -1037,7 +980,7 @@ class VMService:
         
         # Update timeout
         vm.runtime_expires_at = new_expiry
-        vm.last_active_at = datetime.utcnow()
+        vm.last_active_at = datetime.now()
         
         await db.commit()
         await db.refresh(vm)
@@ -1086,7 +1029,7 @@ class VMService:
         Auto-delete VM po 14 dniach nieaktywności.
         Uruchamiać co godzinę via APScheduler.
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=settings.VM_AUTO_DELETE_DAYS)
+        cutoff_date = datetime.now() - timedelta(days=settings.VM_AUTO_DELETE_DAYS)
 
         result = await db.execute(
             select(VM).where(
