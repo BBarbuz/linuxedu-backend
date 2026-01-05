@@ -11,6 +11,7 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
+import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -566,52 +567,86 @@ class AnsibleService:
 
     async def run_verify_test(self, test_id: int, ip_address: str) -> Optional[Dict]:
         """
-        Uruchom verify-test-{id}.yml playbook.
-        Zwraca JSON z wynikami.
+        Run Ansible verify-test playbook and parse JSON output.
         """
-        playbook = f"{self.playbooks_dir}/verify-test-{test_id}.yml"
-        cmd = [
-            "ansible-playbook",
-            playbook,
-            f"-i {ip_address},",
-            f"-u {self.user}",
-            f"--private-key={self.ssh_key}",
-            "-vv"
-        ]
-
         try:
+            from app.config import settings
+            
+            playbook_path = f"{settings.ANSIBLE_PLAYBOOKS_PATH}/verify-test-{test_id}.yml"
+            
+            cmd = [
+                "ansible-playbook",
+                playbook_path,
+                "-i", f"{ip_address},",
+                "-u", settings.ANSIBLE_USER,
+                "--private-key", settings.ANSIBLE_SSH_KEY_PATH,
+            ]
+            
             result = subprocess.run(
-                " ".join(cmd),
-                shell=True,
+                cmd,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10 minut
+                timeout=settings.ANSIBLE_EXECUTION_TIMEOUT_SECONDS
             )
-
-            if result.returncode == 0:
-                # Parse output JSON
-                import json
-                try:
-                    # Output będzie w formacie JSON w stdout
-                    output_json = json.loads(result.stdout)
-                    logger.info(f"✅ Ansible verify-test-{test_id} completed")
-                    return output_json
-                except json.JSONDecodeError:
-                    logger.error(f"❌ Could not parse Ansible JSON output")
-                    return None
-            else:
-                logger.error(f"❌ Ansible verify-test-{test_id} failed: {result.stderr}")
-                return None
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"❌ Ansible verify-test-{test_id} timeout")
+            
+            logger.debug(f"[VERIFY] Ansible stdout length: {len(result.stdout)}")
+            
+            # Find the "PRINT: JSON for backend" task output
+            # Format: "msg": "{...escaped JSON...}"
+            
+            lines = result.stdout.split('\n')
+            for i, line in enumerate(lines):
+                if '"msg":' in line and 'passed_tasks' in line:
+                    try:
+                        # Extract the part after "msg": "
+                        msg_start = line.find('"msg": "')
+                        if msg_start == -1:
+                            continue
+                        
+                        # Start from after "msg": "
+                        json_start = msg_start + len('"msg": "')
+                        
+                        # Find the closing quote - look for "}\" at the end
+                        # The JSON ends with }\" (escaped closing brace and quote)
+                        json_end = line.rfind('"')
+                        
+                        if json_end <= json_start:
+                            continue
+                        
+                        # Extract the escaped JSON string
+                        escaped_json = line[json_start:json_end]
+                        
+                        # Remove trailing backslash if present
+                        if escaped_json.endswith('\\'):
+                            escaped_json = escaped_json[:-1]
+                        
+                        # Unescape the JSON
+                        json_str = escaped_json.replace('\\"', '"').replace('\\n', '\n')
+                        
+                        # Strip any remaining whitespace
+                        json_str = json_str.strip()
+                        
+                        # Parse the JSON
+                        parsed = json.loads(json_str)
+                        logger.info(f"[VERIFY] ✅ Successfully parsed JSON from Ansible output")
+                        logger.debug(f"[VERIFY] Parsed: passed_tasks={parsed.get('passed_tasks')}, total={parsed.get('total_tasks')}")
+                        return parsed
+                        
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"[VERIFY] Found JSON-like content but failed to parse: {e}")
+                        logger.debug(f"[VERIFY] Extracted string (first 300 chars): {json_str[:300] if 'json_str' in locals() else 'N/A'}")
+                        continue
+            
+            logger.error("[VERIFY] ❌ Could not find/parse JSON in Ansible stdout")
             return None
-        except FileNotFoundError:
-            logger.error(f"❌ Playbook not found: {playbook}")
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"[VERIFY] Ansible playbook timeout for test {test_id}")
             return None
         except Exception as e:
-            logger.error(f"❌ Ansible error: {e}")
+            logger.error(f"[VERIFY] ❌ Error running Ansible: {str(e)}", exc_info=True)
             return None
+
 
 
 # ============================================================================

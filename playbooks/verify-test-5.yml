@@ -1,11 +1,4 @@
----
-# ============================================================================
-# LinuxEdu - Test 2: User Management with Sudo Verification Playbook
-# File: verify_task_2.yml (Zarządzanie Użytkownikami)
-# Purpose: Verify all user management tasks from test 2
-# ============================================================================
-
-- name: Test 2 Verification - User Management & Sudo Configuration
+- name: Test 5 Verification - User Management & Sudo Configuration
   hosts: all
   gather_facts: yes
 
@@ -457,7 +450,7 @@
 
   post_tasks:
     # ==========================================
-    # CALCULATE SUMMARY
+    # CALCULATE STATISTICS
     # ==========================================
     - name: Calculate statistics
       set_fact:
@@ -469,7 +462,7 @@
       tags: always
 
     # ==========================================
-    # PREPARE JSON REPORT ON VM
+    # SAVE JSON REPORT ON VM
     # ==========================================
     - name: "SAVE: Generate JSON report on VM"
       copy:
@@ -502,7 +495,7 @@
       tags: always
 
     # ==========================================
-    # FETCH JSON REPORT TO HOST
+    # FETCH TO HOST
     # ==========================================
     - name: "FETCH: Create local reports directory on host"
       file:
@@ -521,52 +514,37 @@
       tags: always
 
     # ==========================================
-    # PRINT CONSOLE OUTPUT
+    # PRINT: JSON for backend (CRITICAL - stdout JSON only)
     # ==========================================
-    - name: "PRINT: Detailed test results"
+    - name: "PRINT: JSON for backend"
       debug:
         msg: |
-          TEST 2: Zarządzanie Użytkownikami
-          HOST: {{ inventory_hostname }}
-          
-          {% for result in test_results %}
-          [{{ result.task_number }}] {{ result.task_name }}: {{ result.status }}
-          {% endfor %}
+          {{ {
+            "passed_tasks": passed_tests | int,
+            "total_tasks": total_tests | int,
+            "failed_tasks": failed_tests | int,
+            "details": test_results
+          } | to_json }}
       tags: always
 
-    - name: "PRINT: Summary"
+    # ==========================================
+    # PRINT: Human-readable summary (optional)
+    # ==========================================
+    - name: "PRINT: Test summary for logs"
       debug:
         msg: |
-          
+
           ╔════════════════════════════════════════╗
-          ║     TEST 2 VERIFICATION COMPLETE      ║
-          ║  Test: Zarządzanie Użytkownikami      ║
-          ║  Status: {{ overall_status }}         ║
+          ║    TEST 2 VERIFICATION COMPLETED       ║
+          ║  Test: Zarządzanie Użytkownikami       ║
+          ║  Status: {{ overall_status }}          ║
           ╚════════════════════════════════════════╝
-          
+
           Total Tests: {{ total_tests }}
           Passed: {{ passed_tests }}
           Failed: {{ failed_tests }}
           Score: {{ passed_tests }}/{{ total_tests }}
-          
+
           VM Report: {{ report_file }}
           Host Report: {{ local_reports_dir }}/{{ inventory_hostname }}_task2_results.json
-          
-      tags: always
-
-    - name: "PRINT: All reports location on host"
-      debug:
-        msg: |
-          
-          Reports saved to host:
-          {{ local_reports_dir }}/
-          
-          View all reports:
-          ls -la {{ local_reports_dir }}/
-          
-          View specific report:
-          cat {{ local_reports_dir }}/{{ inventory_hostname }}_task2_results.json
-          
-      run_once: true
-      delegate_to: localhost
       tags: always
