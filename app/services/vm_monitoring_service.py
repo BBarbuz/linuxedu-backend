@@ -3,7 +3,7 @@ VM Monitoring Service - monitorowanie migracji i stanu VM
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from fastapi import HTTPException
@@ -154,65 +154,6 @@ class VMMonitoringService:
             return None
 
 
-    
-    # async def _send_migration_alert(
-    #     self,
-    #     vm_record_id: int,
-    #     user_id: int,
-    #     old_node: str,
-    #     new_node: str
-    # ):
-    #     """Wyślij alert o migracji VM"""
-    #     logger.info(
-    #         f"Alert: VM migrated - user={user_id}, "
-    #         f"{old_node} → {new_node}"
-    #     )
-    #     # TODO: Implementuj wysłanie notyfikacji (email, websocket, itp)
-    #     # np. send_user_notification(user_id, "VM foi migrada")
-    
-    # async def get_node_status(self, node: str) -> dict:
-    #     """Pobierz status noda"""
-    #     try:
-    #         node_status = self.proxmox.nodes(node).status.get()
-            
-    #         return {
-    #             "node": node,
-    #             "status": node_status.get('status'),
-    #             "uptime": node_status.get('uptime', 0),
-    #             "cpu_usage": node_status.get('cpu', 0),
-    #             "memory_usage": node_status.get('memory', 0),
-    #             "memory_max": node_status.get('maxmemory', 0),
-    #         }
-    #     except Exception as e:
-    #         logger.error(f"Error getting node status: {e}")
-    #         raise
-    
-    # async def get_cluster_status(self) -> dict:
-    #     """Pobierz status całego clustera"""
-    #     try:
-    #         nodes_status = []
-    #         for node in settings.PROXMOX_NODES:
-    #             try:
-    #                 status = await self.get_node_status(node)
-    #                 nodes_status.append(status)
-    #             except:
-    #                 nodes_status.append({
-    #                     "node": node,
-    #                     "status": "offline",
-    #                     "memory_usage": 0,
-    #                     "cpu_usage": 0
-    #                 })
-            
-    #         return {
-    #             "timestamp": datetime.now().isoformat(),
-    #             "nodes": nodes_status,
-    #             "healthy": all(n.get('status') == 'online' for n in nodes_status)
-    #         }
-    #     except Exception as e:
-    #         logger.error(f"Error getting cluster status: {e}")
-    #         raise
-
-
     async def monitor_vm_status_continuous(self, db: AsyncSession):
         """
         Co 5 sekund sprawdza RUNNING/STOPPED status VM z Proxmoxa
@@ -264,6 +205,186 @@ class VMMonitoringService:
                 logger.error(f"Continuous VM status monitor error: {e}")
                 await asyncio.sleep(5)
 
+    async def monitor_vm_expiration(self, db: AsyncSession):
+        """
+        Co 60s sprawdza czy jakieś VM przekroczyły runtime_expires_at
+        i automatycznie je wyłącza.
+        
+        Background task uruchamiany w main.py przy starcie.
+        """
+        logger.info("🕐 Starting VM expiration monitor (check every 60s)")
+        
+        while True:
+            try:
+                # Pobierz wszystkie RUNNING VM z expired timeout
+                db.expire_all()  # Odśwież cache SQLAlchemy
+                result = await db.execute(
+                    select(VM).where(
+                        VM.vm_status == VMStatus.RUNNING,
+                        VM.runtime_expires_at.isnot(None),
+                        VM.runtime_expires_at < datetime.utcnow()
+                    )
+                )
+                expired_vms = result.scalars().all()
+                
+                if expired_vms:
+                    logger.info(f"⏰ Found {len(expired_vms)} expired VMs to shutdown")
+                
+                for vm in expired_vms:
+                    try:
+                        time_overdue = datetime.utcnow() - vm.runtime_expires_at
+                        logger.warning(
+                            f"⏰ VM {vm.proxmox_vm_id} (user {vm.user_id}) expired "
+                            f"{time_overdue.total_seconds():.0f}s ago, shutting down..."
+                        )
+                        
+                        # Wyłącz VM w Proxmoxie (graceful shutdown)
+                        ok = await self.proxmox_service.shutdown_vm(
+                            vm.proxmox_vm_id, 
+                            vm.node, 
+                            max_wait=60
+                        )
+                        
+                        if ok:
+                            vm.vm_status = VMStatus.STOPPED
+                            vm.runtime_expires_at = None
+                            await db.commit()
+                            await db.refresh(vm)
+                            logger.info(f"✅ VM {vm.proxmox_vm_id} auto-shutdown completed")
+                        else:
+                            logger.error(f"❌ Failed to shutdown VM {vm.proxmox_vm_id}, will retry")
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Error auto-shutting VM {vm.proxmox_vm_id}: {e}")
+                        await db.rollback()
+                        continue
+                
+                # Czekaj 60 sekund przed następnym sprawdzeniem
+                await asyncio.sleep(60)
+            
+            except Exception as e:
+                logger.error(f"VM expiration monitor error: {e}", exc_info=True)
+                await asyncio.sleep(60)
+    
+        async def monitor_vm_expiration(self, db: AsyncSession):
+            """
+            Co 60s sprawdza czy jakieś VM przekroczyły runtime_expires_at
+            i automatycznie je wyłącza.
+            """
+            logger.info("🕐 Starting VM expiration monitor (check every 60s)")
+            
+            while True:
+                try:
+                    # Pobierz wszystkie RUNNING VM z expired timeout
+                    db.expire_all()
+                    result = await db.execute(
+                        select(VM).where(
+                            VM.vm_status == VMStatus.RUNNING,
+                            VM.runtime_expires_at.isnot(None),
+                            VM.runtime_expires_at < datetime.utcnow()
+                        )
+                    )
+                    expired_vms = result.scalars().all()
+                    
+                    if expired_vms:
+                        logger.info(f"⏰ Found {len(expired_vms)} expired VMs to shutdown")
+                    
+                    for vm in expired_vms:
+                        try:
+                            time_overdue = datetime.utcnow() - vm.runtime_expires_at
+                            logger.warning(
+                                f"⏰ VM {vm.proxmox_vm_id} (user {vm.user_id}) expired "
+                                f"{time_overdue.total_seconds():.0f}s ago, shutting down..."
+                            )
+                            
+                            # Wyłącz VM w Proxmoxie (graceful shutdown)
+                            ok = await self.proxmox_service.shutdown_vm(
+                                vm.proxmox_vm_id, 
+                                vm.node, 
+                                max_wait=60
+                            )
+                            
+                            if ok:
+                                vm.vm_status = VMStatus.STOPPED
+                                vm.runtime_expires_at = None
+                                await db.commit()
+                                await db.refresh(vm)
+                                logger.info(f"✅ VM {vm.proxmox_vm_id} auto-shutdown completed")
+                            else:
+                                logger.error(f"❌ Failed to shutdown VM {vm.proxmox_vm_id}, will retry")
+                        
+                        except Exception as e:
+                            logger.error(f"❌ Error auto-shutting VM {vm.proxmox_vm_id}: {e}")
+                            await db.rollback()
+                            continue
+                    
+                    # Czekaj 60 sekund
+                    await asyncio.sleep(60)
+                
+                except Exception as e:
+                    logger.error(f"VM expiration monitor error: {e}", exc_info=True)
+                    await asyncio.sleep(60)
+
+
+    async def cleanup_inactive_vms(self, db: AsyncSession):
+        """
+        Co 24h usuwa VM nieaktywne przez 14+ dni.
+        """
+        logger.info(f"🧹 Starting VM cleanup monitor (check every 24h, delete after {settings.VM_AUTO_DELETE_DAYS} days)")
+        
+        while True:
+            try:
+                cutoff_date = datetime.utcnow() - timedelta(days=settings.VM_AUTO_DELETE_DAYS)
+                #cutoff_date = datetime.utcnow() - timedelta(minutes=3)
+
+                db.expire_all()
+                result = await db.execute(
+                    select(VM).where(
+                        VM.last_active_at < cutoff_date,
+                        VM.vm_status != VMStatus.DELETED
+                    )
+                )
+                inactive_vms = result.scalars().all()
+                
+                if inactive_vms:
+                    logger.info(f"🧹 Found {len(inactive_vms)} inactive VMs to delete")
+                
+                for vm in inactive_vms:
+                    try:
+                        logger.info(
+                            f"🗑️ Auto-deleting VM {vm.proxmox_vm_id} "
+                            f"(inactive since {vm.last_active_at})"
+                        )
+                        
+                        # Shutdown if running
+                        if vm.vm_status == VMStatus.RUNNING:
+                            await self.proxmox_service.shutdown_vm(
+                                vm.proxmox_vm_id, vm.node, max_wait=60
+                            )
+                        
+                        # Destroy in Proxmoxie
+                        await self.proxmox_service.destroy_vm(
+                            vm.proxmox_vm_id, vm.node, purge=True
+                        )
+                        
+                        # Mark as deleted
+                        vm.vm_status = VMStatus.DELETED
+                        await db.commit()
+                        
+                        logger.info(f"✅ VM {vm.proxmox_vm_id} auto-deleted")
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Failed to delete VM {vm.proxmox_vm_id}: {e}")
+                        await db.rollback()
+                        continue
+                
+                # Wait 24h
+                await asyncio.sleep(86400)
+                #await asyncio.sleep(120) 
+            
+            except Exception as e:
+                logger.error(f"VM cleanup monitor error: {e}", exc_info=True)
+                await asyncio.sleep(3600)
 
 
 # Singleton

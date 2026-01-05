@@ -51,9 +51,6 @@ class VMResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class ExtendTimeRequest(BaseModel):
-    extension_minutes: int = Field(..., ge=5, le=60)
-
 class VNCUrlResponse(BaseModel):
     vnc_url: str
     expires_in_minutes: int

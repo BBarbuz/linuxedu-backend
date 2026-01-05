@@ -726,11 +726,11 @@ class VMService:
                 return None
 
             # 7. Start VM (start_vm z potwierdzeniem running)
-            ok = await self.proxmox.start_vm(new_vmid)
-            if not ok:
-                vm.vm_status = VMStatus.FAILED
-                await db.commit()
-                return None
+            # ok = await self.proxmox.start_vm(new_vmid)
+            # if not ok:
+            #     vm.vm_status = VMStatus.FAILED
+            #     await db.commit()
+            #     return None
 
             # 8. Finalizacja
             vm.vm_status = VMStatus.READY
@@ -755,35 +755,6 @@ class VMService:
     # ========================================================================
     # OPERACJE NA VM
     # ========================================================================
-
-    # async def start_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-    #     """Start VM + ustaw timer 12h, z potwierdzeniem że VM faktycznie ruszyła."""
-    #     vm = await self._get_user_vm(vm_id, user_id, db)
-
-    #     if vm.vm_status == VMStatus.RUNNING:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_400_BAD_REQUEST,
-    #             detail="VM is already running"
-    #         )
-
-    #     # 1. Start w Proxmoxie + oczekiwanie na 'running'
-    #     ok = await self.proxmox.start_vm(vm.proxmox_vm_id, vm.node)
-    #     if not ok:
-    #         raise HTTPException(
-    #             status_code=status.HTTP_502_BAD_GATEWAY,
-    #             detail="Failed to start VM in Proxmox"
-    #         )
-
-    #     # 2. Aktualizacja BD – dopiero PO potwierdzeniu running
-    #     vm.vm_status = VMStatus.RUNNING
-    #     vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=12)
-    #     vm.last_active_at = datetime.utcnow()
-
-    #     await db.commit()
-    #     await db.refresh(vm)
-
-    #     logger.info(f"✅ VM started: {vm.proxmox_vm_id}")
-    #     return vm
 
     async def start_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
         vm = await self._get_user_vm(vm_id, user_id, db)
@@ -819,7 +790,7 @@ class VMService:
         
         # 4. Finalizuj
         vm.vm_status = VMStatus.RUNNING
-        vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=12)
+        vm.runtime_expires_at = datetime.utcnow() + timedelta(hours=4)
         vm.last_active_at = datetime.utcnow()
         await db.commit()
         
@@ -977,6 +948,51 @@ class VMService:
         logger.info(f"✅ VM deleted: {vm.proxmox_vm_id}")
         return vm
 
+    # async def extend_time(
+    #     self,
+    #     vm_id: int,
+    #     user_id: int,
+    #     extension_minutes: int,
+    #     db: AsyncSession
+    # ) -> VM:
+    #     """
+    #     Przedłuż czas działania VM.
+    #     - extension_minutes: 5-60
+    #     - max total: 12h od teraz
+    #     """
+    #     if extension_minutes < 5 or extension_minutes > 60:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_400_BAD_REQUEST,
+    #             detail="Extension must be between 5 and 60 minutes"
+    #         )
+
+    #     vm = await self._get_user_vm(vm_id, user_id, db)
+
+    #     if vm.vm_status != VMStatus.RUNNING:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_400_BAD_REQUEST,
+    #             detail="VM is not running"
+    #         )
+
+    #     # Max limit: 12 hours from now
+    #     max_runtime = datetime.utcnow() + timedelta(hours=12)
+    #     new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
+
+    #     if new_expiry > max_runtime:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_400_BAD_REQUEST,
+    #             detail="Cannot extend beyond 12 hours limit"
+    #         )
+
+    #     vm.runtime_expires_at = new_expiry
+    #     vm.last_active_at = datetime.utcnow()
+
+    #     await db.commit()
+    #     await db.refresh(vm)
+
+    #     logger.info(f"✅ VM extended: {vm.proxmox_vm_id}, new expiry: {new_expiry}")
+    #     return vm
+
     async def extend_time(
         self,
         vm_id: int,
@@ -985,42 +1001,54 @@ class VMService:
         db: AsyncSession
     ) -> VM:
         """
-        Przedłuż czas działania VM.
-        - extension_minutes: 5-60
-        - max total: 12h od teraz
+        Przedłużyć czas działania VM.
+        
+        Ograniczenia:
+        - extension_minutes: 5-240 minut (5 min - 4 godziny)
+        - Max total: 8 godzin od teraz (zamiast 12h)
+        - VM musi być RUNNING
         """
-        if extension_minutes < 5 or extension_minutes > 60:
+        
+        # Walidacja zakresu
+        if extension_minutes < 5 or extension_minutes > 240:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Extension must be between 5 and 60 minutes"
+                detail="Extension must be between 5 and 240 minutes (4 hours max)"
             )
-
+        
         vm = await self._get_user_vm(vm_id, user_id, db)
-
+        
+        # VM musi być RUNNING
         if vm.vm_status != VMStatus.RUNNING:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="VM is not running"
             )
-
-        # Max limit: 12 hours from now
-        max_runtime = datetime.utcnow() + timedelta(hours=12)
+        
+        # ✅ Max limit: 8 godzin od teraz (zamiast 12h)
+        max_runtime = datetime.utcnow() + timedelta(hours=8)
         new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
-
+        
         if new_expiry > max_runtime:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot extend beyond 12 hours limit"
+                detail=f"Cannot extend beyond 8 hours limit (max until {max_runtime.strftime('%Y-%m-%d %H:%M:%S')})"
             )
-
+        
+        # Update timeout
         vm.runtime_expires_at = new_expiry
         vm.last_active_at = datetime.utcnow()
-
+        
         await db.commit()
         await db.refresh(vm)
-
-        logger.info(f"✅ VM extended: {vm.proxmox_vm_id}, new expiry: {new_expiry}")
+        
+        logger.info(
+            f"⏱️ VM {vm.proxmox_vm_id} extended by {extension_minutes}min "
+            f"(new expiry: {new_expiry})"
+        )
+        
         return vm
+
 
     async def get_user_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
         """Pobierz VM użytkownika."""

@@ -21,7 +21,8 @@ class UserResponse(BaseModel):
     email: Optional[str] = ""
     role: str
     is_active: bool
-
+    created_at: Optional[datetime] = None 
+    
     class Config:
         from_attributes = True
 
@@ -62,3 +63,19 @@ class TestTaskResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class ExtendTimeResponse(BaseModel):
+    vm_id: int
+    extension_minutes: int
+    new_runtime_expires_at: datetime
+    message: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "vm_id": 1,
+                "extension_minutes": 120,
+                "new_runtime_expires_at": "2026-01-06T18:00:00",
+                "message": "Runtime extended successfully"
+            }
+        }

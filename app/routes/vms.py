@@ -383,18 +383,19 @@ def create_router():
     # EXTEND TIME
     # ========================================================================
 
+
     @router.post(
         "/{vm_id}/extend",
         response_model=ExtendTimeResponse,
         summary="Extend VM runtime",
         description="""
-        Extends the VM runtime.
-
+        Extend the VM runtime by 5-240 minutes (4 hours max).
+        
         Conditions:
-        - extension_minutes: 5-60 minutes
-        - Max limit: 12 hours from now
-        - Max 3 extensions per 12h session
-        """
+        - extension_minutes: 5-240 minutes (4 hours max per request)
+        - Max total: 8 hours from now
+        - VM must be RUNNING
+        """,
     )
     async def extend_time(
         vm_id: int,
@@ -402,13 +403,13 @@ def create_router():
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        """Extends the VM runtime."""
+        """Extends the VM runtime by 5-240 minutes."""
         try:
             vm = await vm_service.extend_time(
-                db,
                 vm_id,
                 current_user.id,
-                request.extension_minutes
+                request.extension_minutes,
+                db
             )
 
             return ExtendTimeResponse(
@@ -426,6 +427,7 @@ def create_router():
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to extend VM time"
             )
+
 
     # ========================================================================
     # DELETE VM

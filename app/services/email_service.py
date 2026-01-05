@@ -34,7 +34,7 @@ class EmailService:
         """
         try:
             # Przygotuj wiadomość
-            subject = f"Twoje konto LinuxEdu - Hasło początkowe"
+            subject = f"Twoje konto LinuxEdu - Dane Logowania"
             
             html_body = f"""
             <html>

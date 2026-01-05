@@ -66,13 +66,18 @@ class DeleteVMRequest(BaseModel):
 class ExtendTimeRequest(BaseModel):
     """
     POST /api/vm/{vm_id}/extend
-    Extend Vm working time.
+    Extend VM working time.
     """
-    extension_minutes: int = Field(..., ge=5, le=60, description="Minutes (5-60)")
+    extension_minutes: int = Field(
+        ..., 
+        ge=5, 
+        le=240,  # ✅ Zmień z 60 na 240
+        description="Minutes (5-240)"  # ✅ Zaktualizuj opis
+    )
 
     class Config:
         json_schema_extra = {
-            "example": {"extension_minutes": 15}
+            "example": {"extension_minutes": 120}  # ✅ Przykład 2h
         }
 
 

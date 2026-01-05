@@ -109,6 +109,17 @@ async def startup_event():
             monitoring_service.monitor_vm_status_continuous(AsyncSessionLocal())
         )
         logger.info("✅ Continuous VM status monitoring started (every 5 seconds)")
+
+        asyncio.create_task(
+        monitoring_service.monitor_vm_expiration(AsyncSessionLocal())
+        )
+        logger.info("✅ VM expiration monitor started (check every 60s)")
+
+        asyncio.create_task(
+            monitoring_service.cleanup_inactive_vms(AsyncSessionLocal())
+        )
+        logger.info("✅ VM cleanup monitor started (check every 24h)")
+
         logger.info("✅ VM monitoring started")
         
         logger.info("🎉 Backend startup complete!")
