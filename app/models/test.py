@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SQLEnum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import JSONB
 from enum import Enum
 from app.database import Base
 from datetime import datetime, timedelta
@@ -13,12 +14,6 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
 )
-from sqlalchemy.dialects.postgresql import JSONB  # ← TO MUSI BYĆ DODANE
-from sqlalchemy.orm import relationship
-from datetime import datetime
-
-from app.database import Base
-
 
 class TestDifficulty(str, Enum):
     easy = "easy"
@@ -61,9 +56,7 @@ class TestResult(Base):
     score = Column(String(50), nullable=True)
     status = Column(String(20), nullable=True, default="in_progress")
 
-    # Relacje opcjonalnie, jeśli używasz:
     test = relationship("Test", backref="results")
-    # user = relationship("User", backref="test_results")  # jeśli chcesz i masz cykl importów ogarnięty
     user = relationship("User", backref="test_results")
 
 class TestStatus(str, Enum):

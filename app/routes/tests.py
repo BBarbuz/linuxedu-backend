@@ -1,36 +1,16 @@
-"""
-Test Routes - REFACTORED
-Endpointy API do zarządzania testami i ich uruchomiania
-
-NOWE ENDPOINTY:
-- POST /api/tests/{test_id}/run - Uruchamia test validation na VM użytkownika
-- GET /api/tests/{test_id}/results - Pobiera wyniki testu
-- GET /api/tests/results/latest - Pobiera ostatnie wyniki wszystkich testów
-"""
-
 import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-
 from app.database import get_db
 from app.models.user import User
 from app.models.test import Test, TestTask, TestResult
 from app.utils.auth import get_current_user
-from app.schemas.requests import TestResponse, TestTaskResponse
+from app.schemas.requests import TestResponse, TestTaskResponse, TestResultAdminResponse
 from app.services.test_service import TestService
 from app.services.vm_services import AnsibleService
 from app.config import settings
-
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app.utils.auth import get_current_user
-from app.models.user import User
-from app.schemas.requests import TestResultAdminResponse
-from app.services.test_service import TestService
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +21,6 @@ router = APIRouter(prefix="/api/tests", tags=["tests"])
 # ============================================================================
 
 def get_ansible_service() -> AnsibleService:
-    # settings jest modułem/globalem, NIE dependency
     return AnsibleService(settings)
 
 def get_test_service(
@@ -59,11 +38,6 @@ async def list_tests(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    List all available tests.
-    
-    Returns tests ordered by name.
-    """
     try:
         result = await db.execute(select(Test).order_by(Test.name))
         tests = result.scalars().all()
@@ -82,9 +56,6 @@ async def get_test(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get specific test details.
-    """
     try:
         result = await db.execute(select(Test).where(Test.id == test_id))
         test = result.scalar_one_or_none()

@@ -1,9 +1,3 @@
-"""
-Virtual Machine API Routes
-==========================
-Endpointy dla operacji na maszynach wirtualnych.
-"""
-
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from sqlalchemy.ext.asyncio import AsyncSession

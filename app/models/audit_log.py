@@ -1,7 +1,3 @@
-"""
-Audit logging ORM model
-"""
-
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime

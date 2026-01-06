@@ -1,27 +1,10 @@
-"""
-Test execution service with Ansible integration - REFACTORED VERSION
-Serwis do uruchamiania testów z integracją Ansible
-
-GŁÓWNE ZMIANY:
-1. Naprawiona metoda run_test_validation - teraz używa ansible_service
-2. Dodana metoda run_verification_on_vm - uruchamia verify playbook na konkretnej VM
-3. Właściwe parsowanie JSON z Ansible playbook'u
-4. Zapisanie wyników do bazy (result_json, score, status)
-"""
-
 import logging
-import json
-import subprocess
-import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
-from sqlalchemy.future import select as sql_select
-
+from sqlalchemy import select, desc
 from app.models.test import Test, TestResult, TestStatus
 from app.models.vm import VM
-from app.config import settings
 from sqlalchemy.orm import joinedload
 
 logger = logging.getLogger(__name__)
@@ -29,16 +12,10 @@ logger = logging.getLogger(__name__)
 
 class TestService:
     """
-    Service obsługujący uruchamianie testów i weryfikację poprzez Ansible.
+    Service handles verification and starting Ansible playbooks
     """
     
     def __init__(self, ansible_service=None):
-        """
-        Initialize test service with optional ansible service dependency.
-        
-        Args:
-            ansible_service: AnsibleService instance for playbook execution
-        """
         self.ansible_service = ansible_service
     
     # ========================================================================
@@ -56,14 +33,9 @@ class TestService:
         return result.scalar_one_or_none()
     
     async def get_all_results_for_admin(self, db: AsyncSession):
-        """
-        Fetches all test results for all users from the database.
-        Ordered by completion date (newest first).
-        """
-        # We join TestResult with User to access username/email in the response
         query = (
             select(TestResult)
-            .options(joinedload(TestResult.user))  # Eager load user data
+            .options(joinedload(TestResult.user))
             .order_by(desc(TestResult.completed_at))
         )
         

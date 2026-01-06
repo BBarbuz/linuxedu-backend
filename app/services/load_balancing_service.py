@@ -6,27 +6,10 @@ from app.services.proxmox_client import get_proxmox_client
 logger = logging.getLogger(__name__)
 
 class LoadBalancingService:
-    """
-    Prosty load balancing.
-    """
-    
     def __init__(self):
         self.proxmox = get_proxmox_client()
     
     def get_all_nodes_load(self) -> List[Dict[str, Any]]:
-        """
-        Pobierz obciążenie wszystkich węzłów (bez cache).
-        Obsługuje strukturę:
-        {
-            "node": "inz1borysmaciej",
-            "status": "unknown",
-            "cpu": 0.0068,
-            "maxcpu": 0,
-            "memory": {"total": ..., "used": ..., "available": ..., "free": ...},
-            "maxmemory": 0,
-            "uptime": 8643,
-        }
-        """
         try:
             nodes_statuses = self.proxmox.get_all_nodes_status()
             nodes_load: List[Dict[str, Any]] = []
@@ -36,7 +19,7 @@ class LoadBalancingService:
                 node_status = status.get("status", "unknown")
 
                 try:
-                    # CPU: ułamek 0–1
+                    # CPU: 0–1
                     raw_cpu = status.get("cpu", 0) or 0
                     try:
                         cpu_fraction = float(raw_cpu)
@@ -44,7 +27,7 @@ class LoadBalancingService:
                         cpu_fraction = 0.0
                     cpu_percent = max(0.0, min(cpu_fraction * 100.0, 100.0))
 
-                    # RAM: zagnieżdżony dict
+                    # RAM
                     mem_info = status.get("memory") or {}
                     raw_total = mem_info.get("total", 0) or 0
                     raw_used = mem_info.get("used", 0) or 0
@@ -65,10 +48,9 @@ class LoadBalancingService:
                     else:
                         memory_percent = 0.0
 
-                    # Uznaj node za „aktywny”, jeśli ma sensowne dane o RAM
                     has_resources = memory_total > 0
 
-                    # Jeśli nie ma danych o zasobach – traktuj jako 100%
+                    # If nothing as 100%
                     if not has_resources:
                         cpu_percent = 100.0
                         memory_percent = 100.0
@@ -115,7 +97,6 @@ class LoadBalancingService:
 
     
     def _get_fallback_nodes(self) -> List[Dict[str, Any]]:
-        """Fallback: domyślne węzły"""
         return [
             {
                 "node": node,
@@ -129,7 +110,6 @@ class LoadBalancingService:
         ]
     
     def get_best_node(self) -> str:
-        """Zwróć najmniej obciążony węzeł"""
         nodes_load = self.get_all_nodes_load()
         
         if not nodes_load:
@@ -152,7 +132,6 @@ _load_balancing_service = None
 def init_load_balancing_service(proxmox=None):
     global _load_balancing_service
     _load_balancing_service = LoadBalancingService()
-    logger.info("✅ Load balancing service initialized")
 
 def get_load_balancing_service():
     global _load_balancing_service

@@ -85,8 +85,8 @@ class TestResultAdminResponse(BaseModel):
     id: int
     test_id: int
     user_id: int
-    username: str     # Added username for context
-    email: str        # Added email for context
+    username: str
+    email: str
     score: int
     max_score: int
     status: str

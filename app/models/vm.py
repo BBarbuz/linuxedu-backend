@@ -1,14 +1,7 @@
-"""
-Virtual Machine Management Models
-=====================================
-Modele ORM dla zarządzania maszynami wirtualnymi.
-"""
-
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey, 
     Enum as SQLEnum, Text, UniqueConstraint
 )
-
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import INET
 from datetime import datetime
@@ -50,10 +43,6 @@ class SSHKeyType(str, Enum):
 # ============================================================================
 
 class VM(Base):
-    """
-    Tabela: users_vms
-    Mapowanie użytkownika na maszynę wirtualną.
-    """
     __tablename__ = "users_vms"
 
     # Primary Key
@@ -95,10 +84,6 @@ class VM(Base):
 
 
 class VMMetadata(Base):
-    """
-    Tabela: vms_metadata
-    Szczegółowe metadane maszyny wirtualnej.
-    """
     __tablename__ = "vms_metadata"
 
     # Primary Key
@@ -141,11 +126,6 @@ class AllocatedIP(Base):
     released_at = Column(DateTime, nullable=True)
 
 class VMIDSequence(Base):
-    """
-    Tabela: vm_id_sequence
-    Licznik dla unikalnych VMID w Proxmoxie.
-    Zawsze dokładnie jeden rekord (id=1).
-    """
     __tablename__ = "vm_id_sequence"
 
     # Primary Key
@@ -160,10 +140,6 @@ class VMIDSequence(Base):
 
 
 class SSHKey(Base):
-    """
-    Tabela: ssh_keys
-    Klucze SSH używane przez Ansible do provisioning'u VM.
-    """
     __tablename__ = "ssh_keys"
 
     # Primary Key

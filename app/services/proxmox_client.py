@@ -1,5 +1,4 @@
 import logging
-import time
 from typing import Dict, Any, List
 from proxmoxer import ProxmoxAPI
 import urllib3
@@ -9,18 +8,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
-class ProxmoxClient:
-    """
-    Prosty Proxmox client BEZ nowych settings (działa natychmiast).
-    """
-    
+class ProxmoxClient:  
     def __init__(self):
         self.primary_client = None
         self.node_clients = {}
         self._initialize_clients()
     
     def _initialize_clients(self):
-        """Inicjalizuj połączenia do Proxmoxa"""
+        """Initialize Proxmox"""
         try:
             # Główny client
             self.primary_client = self._create_client(settings.PROXMOX_HOST)
@@ -32,7 +27,7 @@ class ProxmoxClient:
         # Per-node clients
         nodes = getattr(settings, 'PROXMOX_NODES', ['pve', 'pve2', 'pve3'])
         for i, node_name in enumerate(nodes):
-            node_ip = f"192.168.0.{11 + i}"  # Domyślne IPs
+            node_ip = f"192.168.0.{11 + i}"
             try:
                 self.node_clients[node_name] = self._create_client(node_ip)
                 logger.info(f"✅ Node client connected: {node_name} ({node_ip})")

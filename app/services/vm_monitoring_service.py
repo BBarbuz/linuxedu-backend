@@ -1,6 +1,3 @@
-"""
-VM Monitoring Service - monitorowanie migracji i stanu VM
-"""
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -18,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class VMMonitoringService:
-    """Monitoring pozycji VM - sprawdzanie na którym nodzie VM się znajduje"""
+    """Monitoring VM position - checking on which node VM is"""
     
     def __init__(self, proxmox: ProxmoxAPI):
         self.proxmox = proxmox
@@ -28,7 +25,6 @@ class VMMonitoringService:
 
     
     async def get_vm_location(self, vm_id: int, node: str = None) -> dict:
-        """Async wrapper na sync funkcję"""
         try:
             location = await asyncio.to_thread(
                 self._check_vm_on_node_sync,
@@ -55,15 +51,13 @@ class VMMonitoringService:
 
     
     async def monitor_vm_migrations(self, db: AsyncSession, proxmox: ProxmoxAPI):
-        """Monitorowanie migracji VM"""
-        logger.info("🔍 Starting VM migration monitor...")
+        """VM migration monitorring"""
         logger.info(f"📋 PROXMOX_NODES: {settings.PROXMOX_NODES}")
-
         
         while True:
             session_active = True
             try:
-                # 1. POBIERZ VM
+                # 1. Take VM
                 result = await db.execute(
                     select(VM).where(
                         VM.vm_status.in_([
@@ -79,10 +73,10 @@ class VMMonitoringService:
                 
                 for vm in vms:
                     try:
-                        # 2. TIMEOUT na pobieranie lokacji (30 sekund max)
+                        # 2. TIMEOUT
                         try:
                             location = await asyncio.wait_for(
-                                self.get_vm_location(vm.proxmox_vm_id),  # Szuka na WSZYSTKICH nodach!
+                                self.get_vm_location(vm.proxmox_vm_id),
                                 timeout=10.0
                             )
                         except asyncio.TimeoutError:
@@ -94,7 +88,7 @@ class VMMonitoringService:
                         
                         current_node = location.get('current_node')
                         
-                        # 3. ZMIANA NOXA?
+                        # 3. Node change
                         if current_node and current_node != vm.node:
                             old_node = vm.node
                             vm.node = current_node
@@ -110,20 +104,19 @@ class VMMonitoringService:
                                     vm.id, vm.user_id, old_node, current_node
                                 )
                             
-                            await db.flush()  # ← FLUSH przed commit!
+                            await db.flush()
                             await db.commit()
                             logger.info(f"✅ VM {vm.proxmox_vm_id} migration recorded")
 
                         else:
-                            # ✅ WSZYSTKO OK - log DEBUG (tylko jeśli DEBUG włączony)
                             logger.debug(f"✅ VM {vm.proxmox_vm_id} OK on {current_node}")
                         
                     except Exception as e:
                         logger.debug(f"Error checking VM {vm.proxmox_vm_id}: {e}")
-                        await db.rollback()  # ← Rollback na błąd!
+                        await db.rollback()
                         continue
                 
-                # 4. CZEKAJ
+                # 4. Wait
                 await asyncio.sleep(self.check_interval)
                 
             except Exception as e:
@@ -135,9 +128,6 @@ class VMMonitoringService:
                 await asyncio.sleep(self.check_interval)
 
     def _check_vm_on_node_sync(self, vm_id: int, node: str) -> dict:
-        """
-        SYNC wersja - będzie w threadzie, nie blokuje event loop
-        """
         try:
             vm_info = self.proxmox.nodes(node).qemu(vm_id).status.current.get()
             
@@ -156,14 +146,14 @@ class VMMonitoringService:
 
     async def monitor_vm_status_continuous(self, db: AsyncSession):
         """
-        Co 5 sekund sprawdza RUNNING/STOPPED status VM z Proxmoxa
-        i aktualizuje bazę danych
+        Every 5 secunds takes RUNNING/STOPPED status VM from Proxmoxa
+        and updates DB
         """
         logger.info("Starting continuous VM status monitor (every 5 seconds)")
         
         while True:
             try:
-                # 1. POBIERZ wszystkie VM z bazy (nie deleted)
+                # 1.Take not dealted VM from DB
                 db.expire_all()
                 result = await db.execute(
                     select(VM).where(
@@ -174,14 +164,14 @@ class VMMonitoringService:
                 
                 for vm in vms:
                     try:
-                        # 2. SPRAWDZAJ status na Proxmoxie (z funkcji już istniejącej)
+                        # 2. Check VM status on proxmox server
                         proxmox_status = await self.proxmox_service.get_vm_status(vm.proxmox_vm_id, node=vm.node)
                         is_locked = await self.proxmox_service.is_vm_locked(vm.proxmox_vm_id, node=vm.node)
-                        # 3. PORÓWNAJ z bazą
+                        # 3. Compare with DB
                         if vm.vm_status.value != proxmox_status:
                             old_status = vm.vm_status.value
                             
-                            # 4. UPDATE BAZA
+                            # 4. Update DB
                             if proxmox_status == "running":
                                 vm.vm_status = VMStatus.RUNNING
                             elif proxmox_status == "stopped" and not is_locked:
@@ -198,7 +188,7 @@ class VMMonitoringService:
                         logger.debug(f"Error monitoring VM {vm.proxmox_vm_id}: {e}")
                         continue
                 
-                # 5. CZEKAJ 5 sekund
+                # 5. Wait 5 secunds
                 await asyncio.sleep(5)
                 
             except Exception as e:
@@ -207,17 +197,14 @@ class VMMonitoringService:
 
     async def monitor_vm_expiration(self, db: AsyncSession):
         """
-        Co 60s sprawdza czy jakieś VM przekroczyły runtime_expires_at
-        i automatycznie je wyłącza.
-        
-        Background task uruchamiany w main.py przy starcie.
+        Every 60 secounds check if Vms meets runtime_expires_at
+        and uf yes turn them off automaticlly.
         """
         logger.info("🕐 Starting VM expiration monitor (check every 60s)")
         
         while True:
             try:
-                # Pobierz wszystkie RUNNING VM z expired timeout
-                db.expire_all()  # Odśwież cache SQLAlchemy
+                db.expire_all()
                 result = await db.execute(
                     select(VM).where(
                         VM.vm_status == VMStatus.RUNNING,
@@ -238,7 +225,6 @@ class VMMonitoringService:
                             f"{time_overdue.total_seconds():.0f}s ago, shutting down..."
                         )
                         
-                        # Wyłącz VM w Proxmoxie (graceful shutdown)
                         ok = await self.proxmox_service.shutdown_vm(
                             vm.proxmox_vm_id, 
                             vm.node, 
@@ -259,83 +245,20 @@ class VMMonitoringService:
                         await db.rollback()
                         continue
                 
-                # Czekaj 60 sekund przed następnym sprawdzeniem
                 await asyncio.sleep(60)
             
             except Exception as e:
                 logger.error(f"VM expiration monitor error: {e}", exc_info=True)
                 await asyncio.sleep(60)
-    
-        async def monitor_vm_expiration(self, db: AsyncSession):
-            """
-            Co 60s sprawdza czy jakieś VM przekroczyły runtime_expires_at
-            i automatycznie je wyłącza.
-            """
-            logger.info("🕐 Starting VM expiration monitor (check every 60s)")
-            
-            while True:
-                try:
-                    # Pobierz wszystkie RUNNING VM z expired timeout
-                    db.expire_all()
-                    result = await db.execute(
-                        select(VM).where(
-                            VM.vm_status == VMStatus.RUNNING,
-                            VM.runtime_expires_at.isnot(None),
-                            VM.runtime_expires_at < datetime.utcnow()
-                        )
-                    )
-                    expired_vms = result.scalars().all()
-                    
-                    if expired_vms:
-                        logger.info(f"⏰ Found {len(expired_vms)} expired VMs to shutdown")
-                    
-                    for vm in expired_vms:
-                        try:
-                            time_overdue = datetime.utcnow() - vm.runtime_expires_at
-                            logger.warning(
-                                f"⏰ VM {vm.proxmox_vm_id} (user {vm.user_id}) expired "
-                                f"{time_overdue.total_seconds():.0f}s ago, shutting down..."
-                            )
-                            
-                            # Wyłącz VM w Proxmoxie (graceful shutdown)
-                            ok = await self.proxmox_service.shutdown_vm(
-                                vm.proxmox_vm_id, 
-                                vm.node, 
-                                max_wait=60
-                            )
-                            
-                            if ok:
-                                vm.vm_status = VMStatus.STOPPED
-                                vm.runtime_expires_at = None
-                                await db.commit()
-                                await db.refresh(vm)
-                                logger.info(f"✅ VM {vm.proxmox_vm_id} auto-shutdown completed")
-                            else:
-                                logger.error(f"❌ Failed to shutdown VM {vm.proxmox_vm_id}, will retry")
-                        
-                        except Exception as e:
-                            logger.error(f"❌ Error auto-shutting VM {vm.proxmox_vm_id}: {e}")
-                            await db.rollback()
-                            continue
-                    
-                    # Czekaj 60 sekund
-                    await asyncio.sleep(60)
-                
-                except Exception as e:
-                    logger.error(f"VM expiration monitor error: {e}", exc_info=True)
-                    await asyncio.sleep(60)
 
 
     async def cleanup_inactive_vms(self, db: AsyncSession):
         """
-        Co 24h usuwa VM nieaktywne przez 14+ dni.
-        """
-        logger.info(f"🧹 Starting VM cleanup monitor (check every 24h, delete after {settings.VM_AUTO_DELETE_DAYS} days)")
-        
+        Every 24h deletes Vms inactive more then 14 days.
+        """        
         while True:
             try:
                 cutoff_date = datetime.utcnow() - timedelta(days=settings.VM_AUTO_DELETE_DAYS)
-                #cutoff_date = datetime.utcnow() - timedelta(minutes=3)
 
                 db.expire_all()
                 result = await db.execute(
@@ -380,7 +303,6 @@ class VMMonitoringService:
                 
                 # Wait 24h
                 await asyncio.sleep(86400)
-                #await asyncio.sleep(120) 
             
             except Exception as e:
                 logger.error(f"VM cleanup monitor error: {e}", exc_info=True)
@@ -390,13 +312,10 @@ class VMMonitoringService:
 # Singleton
 vm_monitoring_service = None
 
-
 def init_vm_monitoring_service(proxmox: ProxmoxAPI):
     """Inicjuj monitoring serwis"""
     global vm_monitoring_service
     vm_monitoring_service = VMMonitoringService(proxmox)
-    logger.info("✅ VM monitoring service initialized")
-
 
 def get_vm_monitoring_service() -> VMMonitoringService:
     """Pobierz monitoring serwis"""

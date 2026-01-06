@@ -1,16 +1,8 @@
-"""
-Virtual Machine Services
-========================
-Logika biznesowa zarządzania VM.
-Includes: Proxmox API, Ansible, Database operations.
-"""
-
 import asyncio
 import logging
-import subprocess
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, List
 import json
 import os
 
@@ -18,8 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi import HTTPException, status
 
-from app.models.vm import VM, VMStatus, VMMetadata, AllocatedIP, IPStatus, VMIDSequence, SSHKey
-from app.models.user import User
+from app.models.vm import VM, VMStatus, AllocatedIP, IPStatus, VMIDSequence
 from app.config import settings
 from app.services.proxmox_client import get_proxmox_client
 from app.services.load_balancing_service import get_load_balancing_service
@@ -32,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class ProxmoxService:
     """
-    Abstrakcja komunikacji z Proxmox REST API.
+    Abstraction of Proxmox REST API comunication.
     """
 
     def __init__(self, settings):
@@ -50,19 +41,7 @@ class ProxmoxService:
 
     async def _proxmox_request(self, method: str, path: str, data: dict = None, retry_count: int = 3) -> dict:
         """
-        Wykonaj żądanie do Proxmox API z retry logic.
-
-        Args:
-            method: GET, POST, DELETE, PUT
-            path: ścieżka API (bez base_url)
-            data: payload JSON (dla POST, PUT)
-            retry_count: liczba prób
-
-        Returns:
-            Response JSON
-
-        Raises:
-            HTTPException na powtarzalny błąd
+        Execute request to Proxmox API.
         """
         try:
             import requests
@@ -116,7 +95,7 @@ class ProxmoxService:
                     )
 
     async def _ssh_execute(self, command: str, timeout_seconds: int = 180) -> bool:
-        """Wykonaj komendę SSH na Proxmox node."""
+        """Execute commend SSH on Proxmox node."""
         try:
             process = await asyncio.create_subprocess_shell(
                 f"ssh -i /root/.ssh/id_ed25519 root@{self.host} '{command}'",
@@ -159,25 +138,14 @@ class ProxmoxService:
 
     async def start_vm(self, vmid: int, target_node: str, max_wait: int = 60) -> bool:
         """
-        Start VM na konkretnym nodzie.
-        
-        Args:
-            vmid: Proxmox VM ID
-            target_node: Node z bazy users_vms (np. 'inz2borysmaciej')
-            max_wait: max czas czekania na 'running' (sekundy)
-        
-        Returns:
-            True jeśli VM osiągnęła stan 'running'
+        Start VM on specific node
         """
         logger.info(f"🚀 Starting VM {vmid} on node '{target_node}'")
         
-        # 1. Ścieżka z node z bazy (zamiast self.node!)
         path = f"/nodes/{target_node}/qemu/{vmid}/status/start"
         
-        # 2. Wyślij start command
         result = await self._proxmox_request("POST", path, {})
         
-        # 3. Wyciągnij UPID taska (opcjonalne)
         upid = None
         if isinstance(result, str):
             upid = result
@@ -187,7 +155,6 @@ class ProxmoxService:
         if upid:
             logger.info(f"📋 Start task UPID for VM {vmid}: {upid}")
         
-        # 4. Czekaj aż VM będzie 'running' na TYM node
         for i in range(max_wait):
             try:
                 status = await self.get_vm_status(vmid, node=target_node)
@@ -195,7 +162,7 @@ class ProxmoxService:
                     logger.info(f"✅ VM {vmid} is running on {target_node}")
                     return True
                 
-                if i % 10 == 0:  # Log co 10 sekund
+                if i % 10 == 0:
                     logger.debug(f"⏳ VM {vmid} status: {status} (wait {i+1}/{max_wait}s)")
                 
                 await asyncio.sleep(1)
@@ -209,13 +176,11 @@ class ProxmoxService:
 
     async def shutdown_vm(self, vmid: int, target_node: str, max_wait: int = 60) -> bool:
         """
-        Graceful shutdown VM i poczekaj aż status będzie 'stopped'.
-        max_wait – maksymalny czas w sekundach na wyłączenie VM.
+        Graceful shutdown VM and wait till will be 'stopped'.
         """
         logger.info(f"🛑 SHUTDOWN START: VM {vmid} on '{target_node}'")
         path = f"/nodes/{target_node}/qemu/{vmid}/status/shutdown"
 
-        # 1. Wyślij żądanie shutdown – może zwrócić UPID
         result = await self._proxmox_request("POST", path, {})
 
         upid = None
@@ -227,7 +192,6 @@ class ProxmoxService:
         if upid:
             logger.info(f"Shutdown task UPID for VM {vmid}: {upid}")
 
-        # 2. Sprawdzaj status VM aż będzie 'stopped' albo timeout
         for i in range(max_wait):
             status = await self.get_vm_status(vmid, target_node)
             logger.info(f"⏳ VM {vmid} [{i+1}/{max_wait}s]: '{status}' on {target_node}")  
@@ -241,12 +205,10 @@ class ProxmoxService:
 
     async def reboot_vm(self, vmid: int, target_node: str, max_wait: int = 120) -> bool:
         """
-        Graceful reboot VM i poczekaj aż wróci do 'running'.
-        max_wait – maksymalny czas w sekundach na restart VM.
+        Graceful reboot VM and wit till be 'running'.
         """
         path = f"/nodes/{target_node}/qemu/{vmid}/status/reboot"
 
-        # 1. Wyślij żądanie reboot – może zwrócić UPID
         result = await self._proxmox_request("POST", path, {})
 
         upid = None
@@ -258,7 +220,6 @@ class ProxmoxService:
         if upid:
             logger.info(f"Reboot task UPID for VM {vmid}: {upid}")
 
-        # 2. Sprawdzaj status VM: najpierw stopped, potem running
         for _ in range(max_wait):
             status = await self.get_vm_status(vmid, target_node)
             
@@ -268,7 +229,7 @@ class ProxmoxService:
             elif status == "stopped":
                 logger.debug(f"VM {vmid} shutting down during reboot...")
             
-            await asyncio.sleep(2)  # dłuższy interwał dla reboot
+            await asyncio.sleep(2)
 
         logger.error(f"❌ VM {vmid} did not reboot successfully within {max_wait}s")
         return False
@@ -283,14 +244,12 @@ class ProxmoxService:
         path = f"/nodes/{target_node}/qemu/{vmid}"
         params = {"purge": 1} if purge else {}
 
-        # First shutdown
         try:
             await self.shutdown_vm(vmid)
-            await asyncio.sleep(10)  # Wait for shutdown
+            await asyncio.sleep(10)
         except Exception as e:
             logger.warning(f"Shutdown failed (may be already off): {e}")
 
-        # Then destroy
         await self._proxmox_request("DELETE", path, params)
         
         # Cleanup RBD volumes
@@ -329,7 +288,6 @@ class ProxmoxService:
         max_wait: int = 600,
         online: int = 1
     ) -> bool:
-        """Migruj VM, czekaj na UPID"""
         if current_node == target_node:
             logger.info(f"VM {vmid}: source == target, skipping migration")
             return True
@@ -342,7 +300,6 @@ class ProxmoxService:
         try:
             result = await self._proxmox_request("POST", path, data)
             
-            # Wyciągnij UPID (może być str lub dict)
             upid = None
             if isinstance(result, str):
                 upid = result
@@ -355,7 +312,6 @@ class ProxmoxService:
             
             logger.info(f"📋 Migration UPID: {upid}")
             
-            # Polling z timeout
             for i in range(max_wait):
                 try:
                     status = await self._proxmox_request(
@@ -366,7 +322,6 @@ class ProxmoxService:
                     task_status = status.get("status")
                     exit_status = status.get("exitstatus")
                     
-                    # Log postępu co 30s
                     if i > 0 and i % 30 == 0:
                         logger.info(f"Migration in progress... {i}/{max_wait}s")
                     
@@ -391,21 +346,7 @@ class ProxmoxService:
             logger.error(f"❌ Migration request failed: {e}", exc_info=True)
             return False
 
-
-
-
     async def poll_vm_ready(self, vmid: int, max_attempts: int = 30, interval: int = 1) -> bool:
-        """
-        Poll VM do czasu aż będzie ready.
-
-        Args:
-            vmid: Proxmox VMID
-            max_attempts: max liczba sprawdzeń
-            interval: sekundy między sprawdzeniami
-
-        Returns:
-            True jeśli ready, False na timeout
-        """
         for attempt in range(max_attempts):
             try:
                 status = await self.get_vm_status(vmid, vm.node)
@@ -422,7 +363,7 @@ class ProxmoxService:
 
     async def get_vnc_url(self, vmid: int, target_node: str, expiry_seconds: int = 1800) -> str:
         """
-        Get VNC URL w formacie Proxmox noVNC
+        Get VNC URL in Proxmox noVNC format
         """
         try:
             vncurl = (
@@ -457,8 +398,7 @@ class ProxmoxService:
         max_wait: int = 3600,   # max 60 min
     ) -> bool:
         """
-        Klonuj VM z template_vmid do new_vmid i poczekaj na zakończenie taska.
-        Zwraca True, jeśli Proxmox zakończył klon z exitstatus=OK.
+        Clone VM from template_vmid to new_vmid and wait till the end.
         """
         params = {
             "newid": new_vmid,
@@ -472,10 +412,8 @@ class ProxmoxService:
 
         path = f"/nodes/{target_node}/qemu/{template_vmid}/clone"
 
-        # 1. POST /clone – wynik powinien zawierać UPID taska
         result = await self._proxmox_request("POST", path, data=params)
 
-        # UPID może być stringiem albo w polu "upid"/"data"
         upid = None
         if isinstance(result, str):
             upid = result
@@ -488,7 +426,6 @@ class ProxmoxService:
 
         logger.info(f"Clone task UPID for VM {new_vmid}: {upid}")
 
-        # 2. Poll status: GET /nodes/{node}/tasks/{upid}/status
         for _ in range(max_wait):
             status = await self._proxmox_request(
                 "GET",
@@ -517,14 +454,6 @@ class ProxmoxService:
 # ============================================================================
 
 class AnsibleService:
-    """
-    Uruchamianie Ansible.
-    Naprawiono:
-    1. Wiszenie na promptach hasła (Check sudo) -> stdin=DEVNULL
-    2. Szybkość -> Multiplexing SSH (/tmp socket)
-    3. Parsing JSON -> Odporność na błędy
-    """
-
     def __init__(self, settings):
         self.playbooks_dir = settings.ANSIBLE_PLAYBOOKS_DIR
         self.ssh_key = settings.ANSIBLE_SSH_KEY_PATH
@@ -534,13 +463,9 @@ class AnsibleService:
     def _get_ansible_env(self):
         env = os.environ.copy()
         
-        # Ignorowanie kluczy i błędów
         env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
         env["ANSIBLE_RETRY_FILES_ENABLED"] = "False"
         
-        # SSH Args: 
-        # ControlPath w /tmp zapobiega błędom uprawnień i "Error 4"
-        # ControlPersist=5s - wystarczy, żeby przyspieszyć, a nie blokuje zamykania procesu
         ssh_args = (
             "-C "
             "-o ControlMaster=auto "
@@ -554,7 +479,6 @@ class AnsibleService:
         )
         env["ANSIBLE_SSH_ARGS"] = ssh_args
 
-        # Formatowanie wyjścia
         env["ANSIBLE_CALLBACK_WHITELIST"] = "profile_tasks"
         env["ANSIBLE_STDOUT_CALLBACK"] = "default"
         env["ANSIBLE_FORCE_COLOR"] = "true"
@@ -562,15 +486,11 @@ class AnsibleService:
         return env
 
     async def _run_with_live_logs(self, cmd, env, log_prefix="[Ansible]") -> str:
-        """
-        Uruchamia proces z odciętym wejściem (stdin=DEVNULL),
-        co zapobiega wiszeniu na pytaniach o hasło sudo.
-        """
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT, # Błędy lecą do stdout
-            stdin=asyncio.subprocess.DEVNULL, # <--- KLUCZOWA POPRAWKA: Zabija wiszące prompty o hasło
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
             env=env
         )
 
@@ -578,7 +498,6 @@ class AnsibleService:
         
         try:
             while True:
-                # Czekamy na linię. Timeout na linię to zabezpieczenie, gdyby jednak coś zwisło.
                 try:
                     line = await asyncio.wait_for(process.stdout.readline(), timeout=120)
                 except asyncio.TimeoutError:
@@ -589,7 +508,7 @@ class AnsibleService:
                         pass
                     break
 
-                if not line: # Koniec strumienia
+                if not line:
                     break
 
                 decoded_line = line.decode('utf-8', errors='replace').strip()
@@ -645,23 +564,15 @@ class AnsibleService:
             logger.info(f"🔍 Running verification for test {test_id} on {ip_address}...")
             
             output, return_code = await self._run_with_live_logs(cmd, self._get_ansible_env(), log_prefix="[VERIFY]")
-
-            # Nie przejmujemy się return_code != 0, bo testy mogą oblewać (co daje exit code 2).
-            # Ważne jest tylko, czy wypluł JSON na końcu.
-
-            # Parsowanie JSON (szukamy od końca)
             lines = output.split('\n')
-            for line in reversed(lines): # Odwracamy, żeby szybciej znaleźć wynik na końcu
+            for line in reversed(lines):
                 if '"msg":' in line and 'passed_tasks' in line:
                     try:
                         msg_start = line.find('"msg": "')
                         if msg_start == -1: continue
                         
-                        # Pobieramy wszystko po msg": "
                         content = line[msg_start + len('"msg": "'):]
                         
-                        # Szukamy końcowego cudzysłowu (uważając na escaped quotes)
-                        # Prostszą metodą jest znalezienie ostatniego cudzysłowu w linii
                         json_end = content.rfind('"') 
                         if json_end == -1: continue
                         
@@ -670,7 +581,6 @@ class AnsibleService:
                         if escaped_json.endswith('\\'): 
                             escaped_json = escaped_json[:-1]
                         
-                        # Odkręcamy escapowanie zrobione przez Ansible
                         json_str = escaped_json.replace('\\"', '"').replace('\\n', '\n').strip()
                         
                         parsed = json.loads(json_str)
@@ -695,8 +605,8 @@ class AnsibleService:
 
 class VMService:
     """
-    Logika biznesowa dla zarządzania VM.
-    Orkiestruje Proxmox, Ansible i bazę danych.
+    Bussines logic to menage VM.
+    Manages Proxmox, Ansible and DB.
     """
 
     def __init__(self, proxmox_service: ProxmoxService, ansible_service: AnsibleService):
@@ -717,12 +627,10 @@ class VMService:
         4. Klon z template (z potwierdzeniem)
         5. Ustawienie CREATED (VM istnieje w Proxmox)
         6. Konfiguracja cloud-init
-        7. Start VM (z potwierdzeniem)
-        8. Ansible provisioning
-        9. Finalizacja (READY)
+        7. Ansible provisioning
+        8. Finalizacja (READY)
         """
         try:
-            # 1. Walidacja – pomijamy DELETED i NULL
             result = await db.execute(
                 select(VM).where(
                     (VM.user_id == user_id) &
@@ -734,7 +642,6 @@ class VMService:
                 logger.warning(f"User {user_id} already has active VM")
                 return None
 
-            # 2. Alokacja VMID + IP
             vmid_result = await db.execute(
                 select(VMIDSequence).with_for_update()
             )
@@ -754,7 +661,6 @@ class VMService:
                 return None
             allocated_ip.status = IPStatus.ALLOCATED
 
-            # 3. Rezerwacja w DB – VM jest w stanie CREATING (kopiowanie w toku)
             vm = VM(
                 user_id=user_id,
                 proxmox_vm_id=new_vmid,
@@ -768,7 +674,6 @@ class VMService:
             await db.commit()
             await db.refresh(vm)
 
-            # 4. Klon z szablonu + POTWIERDZENIE (UPID + polling)
             ok = await self.proxmox.clone_vm(
                 template_vmid=settings.PROXMOX_TEMPLATE_VMID,
                 new_vmid=new_vmid,
@@ -783,16 +688,14 @@ class VMService:
                 await db.commit()
                 return None
 
-            # 5. Po udanym klonie: VM jest utworzona w Proxmox → status CREATED
             vm.vm_status = VMStatus.CREATED
             await db.commit()
             await db.refresh(vm)
 
-            # 6. Configure VM (cloud-init: IP, hostname, ssh key)
             ok = await self.proxmox.configure_vm(
                 new_vmid,
                 str(allocated_ip.ip_address),
-                "",  # SSH key
+                "", 
                 vm.vm_name
             )
             if not ok:
@@ -807,7 +710,6 @@ class VMService:
             #     await db.commit()
             #     return None
 
-            # 8. Finalizacja
             vm.vm_status = VMStatus.READY
             vm.runtime_expires_at = datetime.now() + timedelta(
                 seconds=settings.VM_DEFAULT_TIMEOUT_SECONDS
@@ -837,7 +739,6 @@ class VMService:
         if vm.vm_status == VMStatus.RUNNING:
             raise HTTPException(status_code=400, detail="Already running")
         
-        # 1. Best node
         target_node = vm.node
         try:
             best_node = await asyncio.to_thread(
@@ -847,7 +748,6 @@ class VMService:
         except Exception as e:
             logger.warning(f"Load balancing error: {e}")
         
-        # 2. Migracja jeśli potrzeba
         if target_node != vm.node:
             logger.info(f"Migrating {vm.proxmox_vm_id}: {vm.node} → {target_node}")
             if await self.proxmox.migrate_vm(vm.proxmox_vm_id, vm.node, target_node):
@@ -858,12 +758,10 @@ class VMService:
                 logger.warning("Migration failed, fallback")
                 target_node = vm.node
         
-        # 3. Start
         ok = await self.proxmox.start_vm(vm.proxmox_vm_id, target_node)
         if not ok:
             raise HTTPException(status_code=502, detail="Start failed")
         
-        # 4. Finalizuj
         vm.vm_status = VMStatus.RUNNING
         vm.runtime_expires_at = datetime.now() + timedelta(hours=4)
         vm.last_active_at = datetime.now()
@@ -873,7 +771,7 @@ class VMService:
 
 
     async def stop_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Stop VM z potwierdzeniem z Proxmoxa."""
+        """Stop VM"""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
         ok = await self.proxmox.shutdown_vm(vm.proxmox_vm_id, vm.node)
@@ -894,7 +792,7 @@ class VMService:
         return vm
 
     async def reboot_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Reboot VM (nie resetuje timer), z potwierdzeniem."""
+        """Reboot VM"""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
         if vm.vm_status != VMStatus.RUNNING:
@@ -980,25 +878,16 @@ class VMService:
         return old_vm
 
     async def delete_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """
-        Usuń VM i zwolnij zasoby.
-        - Proxmox: destroy VM (+ RBD cleanup)
-        - DB: mark as DELETED
-        - IP: zwolnij
-        """
         vm = await self._get_user_vm(vm_id, user_id, db)
 
-        # Proxmox destroy (też czyści RBD)
         try:
             await self.proxmox.destroy_vm(vm.proxmox_vm_id, vm.node)
         except Exception as e:
             logger.warning(f"⚠️  Proxmox destroy failed (may be OK): {e}")
 
-        # Update status
         vm.vm_status = VMStatus.DELETED
         vm.runtime_expires_at = None
 
-        # Zwolnij IP
         ip_result = await db.execute(
             select(AllocatedIP).where(AllocatedIP.ip_address == vm.ip_address)
         )
@@ -1018,16 +907,7 @@ class VMService:
         extension_minutes: int,
         db: AsyncSession
     ) -> VM:
-        """
-        Przedłużyć czas działania VM.
         
-        Ograniczenia:
-        - extension_minutes: 5-240 minut (5 min - 4 godziny)
-        - Max total: 8 godzin od teraz (zamiast 12h)
-        - VM musi być RUNNING
-        """
-        
-        # Walidacja zakresu
         if extension_minutes < 5 or extension_minutes > 240:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1036,14 +916,12 @@ class VMService:
         
         vm = await self._get_user_vm(vm_id, user_id, db)
         
-        # VM musi być RUNNING
         if vm.vm_status != VMStatus.RUNNING:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="VM is not running"
             )
         
-        # ✅ Max limit: 8 godzin od teraz (zamiast 12h)
         max_runtime = datetime.now() + timedelta(hours=8)
         new_expiry = vm.runtime_expires_at + timedelta(minutes=extension_minutes)
         
@@ -1053,7 +931,6 @@ class VMService:
                 detail=f"Cannot extend beyond 8 hours limit (max until {max_runtime.strftime('%Y-%m-%d %H:%M:%S')})"
             )
         
-        # Update timeout
         vm.runtime_expires_at = new_expiry
         vm.last_active_at = datetime.now()
         
@@ -1069,11 +946,11 @@ class VMService:
 
 
     async def get_user_vm(self, vm_id: int, user_id: int, db: AsyncSession) -> VM:
-        """Pobierz VM użytkownika."""
+        """Take VM user"""
         return await self._get_user_vm(vm_id, user_id, db)
 
     async def list_user_vms(self, db: AsyncSession, user_id: int) -> List[VM]:
-        """List wszystkie VM użytkownika."""
+        """List all user VMs"""
         result = await db.execute(
             select(VM)
             .where((VM.user_id == user_id) & (VM.vm_status != VMStatus.DELETED))
@@ -1083,7 +960,7 @@ class VMService:
 
 
     async def get_vnc_url(self, vm_id: int, user_id: int, db: AsyncSession) -> str:
-        """Pobierz VNC URL dla VM."""
+        """Get VNC URL for  VM."""
         vm = await self._get_user_vm(vm_id, user_id, db)
 
         if vm.vm_status != VMStatus.RUNNING:
@@ -1094,32 +971,6 @@ class VMService:
 
         vnc_url = await self.proxmox.get_vnc_url(vm.proxmox_vm_id, vm.node, expiry_seconds=1800)
         return vnc_url
-
-    # ========================================================================
-    # CLEANUP & MAINTENANCE
-    # ========================================================================
-
-    async def cleanup_inactive_vms(self, db: AsyncSession):
-        """
-        Auto-delete VM po 14 dniach nieaktywności.
-        Uruchamiać co godzinę via APScheduler.
-        """
-        cutoff_date = datetime.now() - timedelta(days=settings.VM_AUTO_DELETE_DAYS)
-
-        result = await db.execute(
-            select(VM).where(
-                (VM.last_active_at < cutoff_date) &
-                (VM.vm_status != VMStatus.DELETED)
-            )
-        )
-        inactive_vms = result.scalars().all()
-
-        for vm in inactive_vms:
-            try:
-                await self.delete_vm(vm.id, vm.user_id, db)
-                logger.info(f"✅ Auto-deleted inactive VM: {vm.proxmox_vm_id}")
-            except Exception as e:
-                logger.error(f"❌ Failed to auto-delete VM {vm.proxmox_vm_id}: {e}")
 
     # ========================================================================
     # PRIVATE HELPERS
@@ -1149,7 +1000,7 @@ class VMService:
         return vm
 
     async def get_vm_stats(self, proxmox_vm_id: int, node: str) -> dict:
-        """Pobierz live statystyki VM z Proxmoxa"""
+        """Take live VM statistic from Proxmoxa"""
         try:
             logger.debug(f"Fetching stats for VM {proxmox_vm_id} on node {node}")
             

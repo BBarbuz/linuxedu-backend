@@ -1,6 +1,3 @@
-"""
-Email Service - wysyłanie maili z hasłami
-"""
 import logging
 import smtplib
 from email.mime.text import MIMEText
@@ -10,7 +7,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 class EmailService:
-    """Obsługa wysyłania maili SMTP"""
     
     def __init__(self):
         self.host = settings.SMTP_HOST
@@ -21,19 +17,7 @@ class EmailService:
         self.from_name = settings.SMTP_FROM_NAME
     
     def send_password_email(self, to_email: str, username: str, password: str) -> bool:
-        """
-        Wyślij mail z hasłem dla nowego użytkownika
-        
-        Args:
-            to_email: adres email odbiorcy
-            username: nazwa użytkownika
-            password: hasło początkowe
-            
-        Returns:
-            True jeśli wysłano pomyślnie, False jeśli błąd
-        """
         try:
-            # Przygotuj wiadomość
             subject = f"Twoje konto LinuxEdu - Dane Logowania"
             
             html_body = f"""
@@ -67,60 +51,44 @@ class EmailService:
                 </body>
             </html>
             """
-            
-            # Wyślij email
+
             return self._send_smtp(to_email, subject, html_body)
             
         except Exception as e:
-            logger.error(f"❌ Błąd wysyłania maila do {to_email}: {e}")
+            logger.error(f"❌ Mail sending error to {to_email}: {e}")
             return False
     
     def _send_smtp(self, to_email: str, subject: str, html_body: str) -> bool:
-        """
-        Wewnętrzna funkcja wysyłająca mail via SMTP
-        
-        Args:
-            to_email: adres odbiorcy
-            subject: temat wiadomości
-            html_body: treść HTML
-            
-        Returns:
-            True/False
-        """
         try:
-            # Utwórz wiadomość
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
             msg["From"] = f"{self.from_name} <{self.from_email}>"
             msg["To"] = to_email
             
-            # Dodaj HTML
             msg.attach(MIMEText(html_body, "html"))
             
-            # Połącz i wyślij
             with smtplib.SMTP(self.host, self.port, timeout=10) as server:
-                server.starttls()  # Szyfruj połączenie
+                server.starttls()
                 server.login(self.username, self.password)
                 server.send_message(msg)
             
-            logger.info(f"✅ Mail wysłany do {to_email}")
+            logger.info(f"✅ Mail sent to {to_email}")
             return True
             
         except smtplib.SMTPAuthenticationError:
-            logger.error(f"❌ Błąd autentykacji SMTP. Sprawdź kredencjale w .env")
+            logger.error(f"❌ Auth error SMTP.")
             return False
         except smtplib.SMTPException as e:
-            logger.error(f"❌ Błąd SMTP: {e}")
+            logger.error(f"❌ SMTP error: {e}")
             return False
         except Exception as e:
-            logger.error(f"❌ Błąd wysyłania maila: {e}")
+            logger.error(f"❌ mail sent error: {e}")
             return False
 
 # Singleton
 _email_service = None
 
 def get_email_service() -> EmailService:
-    """Pobierz serwis mailowy"""
     global _email_service
     if _email_service is None:
         _email_service = EmailService()
