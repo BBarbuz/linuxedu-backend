@@ -416,9 +416,12 @@
     - name: "TEST 20: Sudo works for dev_user1"
       block:
         - name: Check sudo
-          shell: "sudo -u dev_user1 sudo whoami | grep -q root"
+          # ZMIANA: dodano flagę -n do drugiego sudo
+          shell: "sudo -u dev_user1 sudo -n whoami | grep -q root"
           register: sudo1_test
           changed_when: false
+          # OPCJONALNIE: Dodaj timeout dla bezpieczeństwa (np. 5 sekund)
+          timeout: 5
 
         - name: Add result
           set_fact:
@@ -435,9 +438,11 @@
     - name: "TEST 21: Sudo works for dev_user2"
       block:
         - name: Check sudo
-          shell: "sudo -u dev_user2 sudo whoami | grep -q root"
+          # ZMIANA: dodano flagę -n do drugiego sudo
+          shell: "sudo -u dev_user2 sudo -n whoami | grep -q root"
           register: sudo2_test
           changed_when: false
+          timeout: 5
 
         - name: Add result
           set_fact:

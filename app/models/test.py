@@ -64,6 +64,7 @@ class TestResult(Base):
     # Relacje opcjonalnie, jeśli używasz:
     test = relationship("Test", backref="results")
     # user = relationship("User", backref="test_results")  # jeśli chcesz i masz cykl importów ogarnięty
+    user = relationship("User", backref="test_results")
 
 class TestStatus(str, Enum):
     PASSED = "passed"

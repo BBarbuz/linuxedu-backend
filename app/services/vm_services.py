@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
 import json
+import os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -517,61 +518,120 @@ class ProxmoxService:
 
 class AnsibleService:
     """
-    Uruchamianie Ansible playbook'ów do provisioning i veryfikacji.
+    Uruchamianie Ansible.
+    Naprawiono:
+    1. Wiszenie na promptach hasła (Check sudo) -> stdin=DEVNULL
+    2. Szybkość -> Multiplexing SSH (/tmp socket)
+    3. Parsing JSON -> Odporność na błędy
     """
 
     def __init__(self, settings):
         self.playbooks_dir = settings.ANSIBLE_PLAYBOOKS_DIR
         self.ssh_key = settings.ANSIBLE_SSH_KEY_PATH
         self.user = settings.ANSIBLE_USER
+        self.execution_timeout = getattr(settings, 'ANSIBLE_EXECUTION_TIMEOUT_SECONDS', 600)
+
+    def _get_ansible_env(self):
+        env = os.environ.copy()
+        
+        # Ignorowanie kluczy i błędów
+        env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+        env["ANSIBLE_RETRY_FILES_ENABLED"] = "False"
+        
+        # SSH Args: 
+        # ControlPath w /tmp zapobiega błędom uprawnień i "Error 4"
+        # ControlPersist=5s - wystarczy, żeby przyspieszyć, a nie blokuje zamykania procesu
+        ssh_args = (
+            "-C "
+            "-o ControlMaster=auto "
+            "-o ControlPersist=5s " 
+            "-o ControlPath=/tmp/ansible-ssh-%h-%p-%r "
+            "-o UserKnownHostsFile=/dev/null "
+            "-o StrictHostKeyChecking=no "
+            "-o ConnectTimeout=10 "
+            "-o GSSAPIAuthentication=no "
+            "-o PreferredAuthentications=publickey"
+        )
+        env["ANSIBLE_SSH_ARGS"] = ssh_args
+
+        # Formatowanie wyjścia
+        env["ANSIBLE_CALLBACK_WHITELIST"] = "profile_tasks"
+        env["ANSIBLE_STDOUT_CALLBACK"] = "default"
+        env["ANSIBLE_FORCE_COLOR"] = "true"
+
+        return env
+
+    async def _run_with_live_logs(self, cmd, env, log_prefix="[Ansible]") -> str:
+        """
+        Uruchamia proces z odciętym wejściem (stdin=DEVNULL),
+        co zapobiega wiszeniu na pytaniach o hasło sudo.
+        """
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, # Błędy lecą do stdout
+            stdin=asyncio.subprocess.DEVNULL, # <--- KLUCZOWA POPRAWKA: Zabija wiszące prompty o hasło
+            env=env
+        )
+
+        full_output = []
+        
+        try:
+            while True:
+                # Czekamy na linię. Timeout na linię to zabezpieczenie, gdyby jednak coś zwisło.
+                try:
+                    line = await asyncio.wait_for(process.stdout.readline(), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.error(f"{log_prefix} ❌ No output for 120s (Hang detected) - killing process")
+                    try:
+                        process.kill()
+                    except:
+                        pass
+                    break
+
+                if not line: # Koniec strumienia
+                    break
+
+                decoded_line = line.decode('utf-8', errors='replace').strip()
+                if decoded_line:
+                    logger.info(f"{log_prefix} {decoded_line}")
+                    full_output.append(decoded_line)
+
+            await process.wait()
+            return "\n".join(full_output), process.returncode
+
+        except Exception as e:
+            logger.error(f"{log_prefix} ❌ Exception: {e}")
+            try:
+                process.kill()
+            except:
+                pass
+            return "", -1
 
     async def run_setup_vm(self, ip_address: str, hostname: str) -> bool:
-        """
-        Uruchom setup-vm.yml playbook.
-        - Setup SSH key
-        - Install packages
-        - Configure fail2ban
-        """
         playbook = f"{self.playbooks_dir}/setup-vm.yml"
         cmd = [
             "ansible-playbook",
             playbook,
-            f"-i {ip_address},",  # Inventory inline
-            f"-u {self.user}",
-            f"-e 'hostname={hostname}'",
+            "-i", f"{ip_address},",
+            "-u", self.user,
+            "-e", f"hostname={hostname}",
             f"--private-key={self.ssh_key}"
         ]
 
-        try:
-            result = subprocess.run(
-                " ".join(cmd),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minut
-            )
+        logger.info(f"🚀 Starting Ansible setup for {ip_address}...")
+        output, return_code = await self._run_with_live_logs(cmd, self._get_ansible_env(), log_prefix="[SETUP]")
 
-            if result.returncode == 0:
-                logger.info(f"✅ Ansible setup-vm completed for {ip_address}")
-                return True
-            else:
-                logger.error(f"❌ Ansible setup-vm failed: {result.stderr}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"❌ Ansible setup-vm timeout for {ip_address}")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Ansible setup-vm error: {e}")
+        if return_code == 0:
+            logger.info(f"✅ Ansible setup-vm completed for {ip_address}")
+            return True
+        else:
+            logger.error(f"❌ Ansible setup-vm failed (code {return_code})")
             return False
 
     async def run_verify_test(self, test_id: int, ip_address: str) -> Optional[Dict]:
-        """
-        Run Ansible verify-test playbook and parse JSON output.
-        """
         try:
             from app.config import settings
-            
             playbook_path = f"{settings.ANSIBLE_PLAYBOOKS_PATH}/verify-test-{test_id}.yml"
             
             cmd = [
@@ -579,74 +639,54 @@ class AnsibleService:
                 playbook_path,
                 "-i", f"{ip_address},",
                 "-u", settings.ANSIBLE_USER,
-                "--private-key", settings.ANSIBLE_SSH_KEY_PATH,
+                f"--private-key={settings.ANSIBLE_SSH_KEY_PATH}"
             ]
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=settings.ANSIBLE_EXECUTION_TIMEOUT_SECONDS
-            )
+            logger.info(f"🔍 Running verification for test {test_id} on {ip_address}...")
             
-            logger.debug(f"[VERIFY] Ansible stdout length: {len(result.stdout)}")
-            
-            # Find the "PRINT: JSON for backend" task output
-            # Format: "msg": "{...escaped JSON...}"
-            
-            lines = result.stdout.split('\n')
-            for i, line in enumerate(lines):
+            output, return_code = await self._run_with_live_logs(cmd, self._get_ansible_env(), log_prefix="[VERIFY]")
+
+            # Nie przejmujemy się return_code != 0, bo testy mogą oblewać (co daje exit code 2).
+            # Ważne jest tylko, czy wypluł JSON na końcu.
+
+            # Parsowanie JSON (szukamy od końca)
+            lines = output.split('\n')
+            for line in reversed(lines): # Odwracamy, żeby szybciej znaleźć wynik na końcu
                 if '"msg":' in line and 'passed_tasks' in line:
                     try:
-                        # Extract the part after "msg": "
                         msg_start = line.find('"msg": "')
-                        if msg_start == -1:
-                            continue
+                        if msg_start == -1: continue
                         
-                        # Start from after "msg": "
-                        json_start = msg_start + len('"msg": "')
+                        # Pobieramy wszystko po msg": "
+                        content = line[msg_start + len('"msg": "'):]
                         
-                        # Find the closing quote - look for "}\" at the end
-                        # The JSON ends with }\" (escaped closing brace and quote)
-                        json_end = line.rfind('"')
+                        # Szukamy końcowego cudzysłowu (uważając na escaped quotes)
+                        # Prostszą metodą jest znalezienie ostatniego cudzysłowu w linii
+                        json_end = content.rfind('"') 
+                        if json_end == -1: continue
                         
-                        if json_end <= json_start:
-                            continue
+                        escaped_json = content[:json_end]
                         
-                        # Extract the escaped JSON string
-                        escaped_json = line[json_start:json_end]
-                        
-                        # Remove trailing backslash if present
-                        if escaped_json.endswith('\\'):
+                        if escaped_json.endswith('\\'): 
                             escaped_json = escaped_json[:-1]
                         
-                        # Unescape the JSON
-                        json_str = escaped_json.replace('\\"', '"').replace('\\n', '\n')
+                        # Odkręcamy escapowanie zrobione przez Ansible
+                        json_str = escaped_json.replace('\\"', '"').replace('\\n', '\n').strip()
                         
-                        # Strip any remaining whitespace
-                        json_str = json_str.strip()
-                        
-                        # Parse the JSON
                         parsed = json.loads(json_str)
-                        logger.info(f"[VERIFY] ✅ Successfully parsed JSON from Ansible output")
-                        logger.debug(f"[VERIFY] Parsed: passed_tasks={parsed.get('passed_tasks')}, total={parsed.get('total_tasks')}")
+                        logger.info(f"[VERIFY] ✅ Successfully parsed JSON results")
                         return parsed
-                        
-                    except (json.JSONDecodeError, ValueError) as e:
-                        logger.warning(f"[VERIFY] Found JSON-like content but failed to parse: {e}")
-                        logger.debug(f"[VERIFY] Extracted string (first 300 chars): {json_str[:300] if 'json_str' in locals() else 'N/A'}")
+
+                    except Exception as e:
+                        logger.warning(f"[VERIFY] JSON parse error: {e}")
                         continue
             
-            logger.error("[VERIFY] ❌ Could not find/parse JSON in Ansible stdout")
-            return None
-            
-        except subprocess.TimeoutExpired:
-            logger.error(f"[VERIFY] Ansible playbook timeout for test {test_id}")
-            return None
-        except Exception as e:
-            logger.error(f"[VERIFY] ❌ Error running Ansible: {str(e)}", exc_info=True)
+            logger.error("[VERIFY] ❌ No JSON found in output (Playbook likely crashed or hung early)")
             return None
 
+        except Exception as e:
+            logger.error(f"[VERIFY] ❌ Error: {str(e)}", exc_info=True)
+            return None
 
 
 # ============================================================================

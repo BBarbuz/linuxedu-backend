@@ -79,3 +79,19 @@ class ExtendTimeResponse(BaseModel):
                 "message": "Runtime extended successfully"
             }
         }
+
+class TestResultAdminResponse(BaseModel):
+    """Schema for returning test results to admins/instructors."""
+    id: int
+    test_id: int
+    user_id: int
+    username: str     # Added username for context
+    email: str        # Added email for context
+    score: int
+    max_score: int
+    status: str
+    passed: bool
+    completed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True

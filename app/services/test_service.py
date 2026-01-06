@@ -16,12 +16,13 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 from sqlalchemy.future import select as sql_select
 
 from app.models.test import Test, TestResult, TestStatus
 from app.models.vm import VM
 from app.config import settings
+from sqlalchemy.orm import joinedload
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,21 @@ class TestService:
         result = await db.execute(select(Test).where(Test.id == test_id))
         return result.scalar_one_or_none()
     
+    async def get_all_results_for_admin(self, db: AsyncSession):
+        """
+        Fetches all test results for all users from the database.
+        Ordered by completion date (newest first).
+        """
+        # We join TestResult with User to access username/email in the response
+        query = (
+            select(TestResult)
+            .options(joinedload(TestResult.user))  # Eager load user data
+            .order_by(desc(TestResult.completed_at))
+        )
+        
+        result = await db.execute(query)
+        return result.scalars().all()
+        
     # ========================================================================
     # TEST EXECUTION - REFACTORED
     # ========================================================================

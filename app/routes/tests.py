@@ -23,6 +23,15 @@ from app.services.test_service import TestService
 from app.services.vm_services import AnsibleService
 from app.config import settings
 
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.utils.auth import get_current_user
+from app.models.user import User
+from app.schemas.requests import TestResultAdminResponse
+from app.services.test_service import TestService
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tests", tags=["tests"])
@@ -368,3 +377,63 @@ async def get_result_details(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve result details"
         )
+
+
+@router.get("/results/global", response_model=List[TestResultAdminResponse])
+async def get_all_global_results(
+    # BŁĄD BYŁ TUTAJ:
+    # Zamiast: current_user: User = Depends(require_role("admin")),
+    # Użyj:
+    current_user: User = Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all test results. Accessible by Admins AND Instructors.
+    """
+    
+    # 1. Sprawdzenie uprawnień (TERAZ TO ZADZIAŁA)
+    # Ponieważ użyliśmy get_current_user, kod wejdzie tutaj i sprawdzi warunek:
+    if current_user.role not in ["admin", "instructor"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Requires 'admin' or 'instructor' role."
+        )
+
+    # 2. Pobieranie danych (bez zmian)
+    test_service = TestService()
+    results = await test_service.get_all_results_for_admin(db)
+    
+    # 3. Mapowanie (bez zmian)
+    response_data = []
+    for res in results:
+        current_score = 0
+        max_score = 0
+        
+        if res.result_json and isinstance(res.result_json, dict):
+            current_score = res.result_json.get('passed_tasks', 0)
+            max_score = res.result_json.get('total_tasks', 0)
+        elif res.score and '/' in str(res.score):
+            try:
+                parts = res.score.split('/')
+                current_score = int(parts[0])
+                if len(parts) > 1:
+                    max_score = int(parts[1])
+            except:
+                pass
+
+        is_passed = (res.status == "passed")
+
+        response_data.append(TestResultAdminResponse(
+            id=res.id,
+            test_id=res.test_id,
+            user_id=res.user_id,
+            username=res.user.username if res.user else "Deleted User",
+            email=res.user.email if res.user else "N/A",
+            score=current_score,
+            max_score=max_score,
+            status=res.status or "unknown",
+            passed=is_passed,
+            completed_at=res.completed_at
+        ))
+        
+    return response_data

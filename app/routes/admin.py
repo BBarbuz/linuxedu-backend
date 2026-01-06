@@ -53,6 +53,11 @@ async def create_user(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already exists")
 
+    # Check if email already exists
+    result_email = await db.execute(select(User).where(User.email == request.email))
+    if result_email.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already exists")
+    
     # Generate initial password
     initial_password = secrets.token_urlsafe(12)
 
